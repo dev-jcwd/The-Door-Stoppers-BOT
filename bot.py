@@ -36,7 +36,7 @@ async def on_ready():
 @commands.has_permissions(administrator=True)
 async def announce(ctx, channel: discord.TextChannel, *, message: str = None):
     # Creates the embed box with a red line (0xFF0000)
-    embed = discord.Embed(color=0xFF0000)
+    embed = discord.Embed(color=0xFFFF00)
     
     # Adds the small icon and "The Door Stoppers" text at the top of the embed
     embed.set_author(name="The Door Stoppers", icon_url=bot.user.display_avatar.url)
