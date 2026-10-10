@@ -101,13 +101,6 @@ async def on_message(message):
     # Ensure other commands still work
     await bot.process_commands(message)
 
-@announce.error
-async def announce_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("You do not have permission to use this command.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Missing information! Usage: `!announce #channel The message here` (or attach an image)")
-
 # Start the web server and bot
 keep_alive()
 bot.run(os.getenv('DISCORD_TOKEN'))
