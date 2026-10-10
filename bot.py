@@ -12,7 +12,6 @@ def home():
     return "Bot is awake and running!"
 
 def run_server():
-    # Render assigns a port dynamically. We must listen on it.
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -22,18 +21,33 @@ def keep_alive():
 
 # --- Discord Bot Setup ---
 intents = discord.Intents.default()
+intents.message_content = True  # Required so the bot can read the !announce command
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    band_link = "your_link_here" 
+    # Replace this placeholder with your actual link
+    band_link = "https://open.spotify.com/artist/3X4BLDDmGQ8bdiJbbBPMaJ" 
+    
     activity = discord.Activity(type=discord.ActivityType.listening, name=band_link)
     await bot.change_presence(status=discord.Status.online, activity=activity)
     print(f'Logged in successfully as {bot.user.name}!')
 
-# Start the web server on a separate thread
-keep_alive()
+# --- Announcement Command ---
+@bot.command()
+@commands.has_permissions(administrator=True) # Only server admins can use this
+async def announce(ctx, channel: discord.TextChannel, *, message: str):
+    """Usage: !announce #channel Your message here"""
+    await channel.send(message)
+    await ctx.send(f"Success! Announcement sent to {channel.mention}.")
 
-# Start the bot using the environment variable token
-# DO NOT put your actual token directly in the code here anymore!
+@announce.error
+async def announce_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You do not have permission to use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Missing information! Usage: `!announce #channel The message here`")
+
+# Start the web server and bot
+keep_alive()
 bot.run(os.getenv('DISCORD_TOKEN'))
