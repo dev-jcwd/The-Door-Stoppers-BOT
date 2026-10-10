@@ -34,8 +34,8 @@ async def on_ready():
 # --- Automated Announcement System ---
 
 # Replace these with your actual Discord IDs!
-DRAFT_CHANNEL_ID = 1558478062558122106      # The private channel where you type drafts
-ANNOUNCE_CHANNEL_ID = 1557950064679321721   # The public channel where announcements go
+DRAFT_CHANNEL_ID = 1553732228096200746      # The private channel where you type drafts
+ANNOUNCE_CHANNEL_ID = 1553732228096200746   # The public channel where announcements go
 NOTIFY_ROLE_ID = 1558034567766474762        # Your @NOTIFY role ID
 
 class ConfirmView(discord.ui.View):
