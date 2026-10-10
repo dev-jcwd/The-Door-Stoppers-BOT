@@ -26,10 +26,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    # Replace this placeholder with your actual link
-    band_link = "https://open.spotify.com/artist/3X4BLDDmGQ8bdiJbbBPMaJ" 
-    
-    activity = discord.Activity(type=discord.ActivityType.listening, name=band_link)
+    # Displays "Listening to The Door Stoppers on Spotify"
+    activity = discord.Activity(type=discord.ActivityType.listening, name="The Door Stoppers on Spotify")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     print(f'Logged in successfully as {bot.user.name}!')
 
