@@ -35,8 +35,11 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def announce(ctx, channel: discord.TextChannel, *, message: str = None):
-    # Creates the embed box with a yellow line (0xFFFF00)
-    embed = discord.Embed(color=0xFFFF00)
+    # Creates the embed box with a red line (0xFF0000)
+    embed = discord.Embed(color=0xFF0000)
+    
+    # Adds the small icon and "The Door Stoppers" text at the top of the embed
+    embed.set_author(name="The Door Stoppers", icon_url=bot.user.display_avatar.url)
     
     # Add the text if you typed a message
     if message:
@@ -51,7 +54,11 @@ async def announce(ctx, channel: discord.TextChannel, *, message: str = None):
         await ctx.send("Please provide some text or attach an image!")
         return
         
-    await channel.send(embed=embed)
+    # The text that appears OUTSIDE the embed to trigger the notification
+    # Replace the 123456789012345678 with your actual NOTIFY Role ID
+    notify_text = "<@&1558034567766474762>\n**TDS ANNOUNCEMENT!**"
+        
+    await channel.send(content=notify_text, embed=embed)
     await ctx.send(f"Success! Announcement sent to {channel.mention}.")
 
 @announce.error
