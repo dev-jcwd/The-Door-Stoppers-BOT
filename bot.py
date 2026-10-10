@@ -33,10 +33,12 @@ async def on_ready():
 
 # --- Announcement Command ---
 @bot.command()
-@commands.has_permissions(administrator=True) # Only server admins can use this
+@commands.has_permissions(administrator=True)
 async def announce(ctx, channel: discord.TextChannel, *, message: str):
-    """Usage: !announce #channel Your message here"""
-    await channel.send(message)
+    # Creates the embed box with a yellow line (0xFFFF00)
+    embed = discord.Embed(description=message, color=0xFFFF00)
+    
+    await channel.send(embed=embed)
     await ctx.send(f"Success! Announcement sent to {channel.mention}.")
 
 @announce.error
