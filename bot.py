@@ -53,7 +53,7 @@ class ConfirmView(discord.ui.View):
             return
 
         embed = discord.Embed(color=0xFFFF00)
-        embed.set_author(name="The Door Stoppers", icon_url=bot.user.display_avatar.url)
+        embed.set_author(name=self.draft_message.author.display_name, icon_url=self.draft_message.author.display_avatar.url)
         
         if self.draft_message.content:
             embed.description = self.draft_message.content
