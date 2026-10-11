@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DRAFT_CHANNEL_ID = 1558478062558122106
 ANNOUNCE_CHANNEL_ID = 1557950064679321721
 NOTIFY_ROLE_ID = 1558034567766474762
-WELCOME_CHANNEL_ID = 1234567890 # Replace this with your Welcome channel ID
+WELCOME_CHANNEL_ID = 1557900784413188107 # Replace this with your Welcome channel ID
 
 @bot.event
 async def on_ready():
