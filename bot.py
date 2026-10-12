@@ -126,6 +126,8 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
                 "Discord Order (Discord Member Discount Applied)"
             ]
             worksheet.append_row(row_data)
+            # Automatically center-align Columns A through J
+            worksheet.format("A:J", {"horizontalAlignment": "CENTER"})
         except Exception as e:
             print(f"Error syncing to Google Sheets: {e}")
 
