@@ -3,7 +3,7 @@ from discord.ext import commands
 import os
 import io
 import re
-import gspread  # <--- NEW: Google Sheets library
+import gspread
 from flask import Flask
 from threading import Thread
 from datetime import datetime, timedelta, timezone
@@ -38,7 +38,7 @@ ADMIN_ROLE_ID = 1557901221669642253
 RECORD_CHANNEL_ID = 1559322818116591666 
 TICKET_CATEGORY_ID = 1559324491543351307 
 
-# THE ID OF THE GOOGLE SHEET I CREATED FOR YOU:
+# THE ID OF THE GOOGLE SHEET
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
 
 # --- Archiving & Google Sheets Function ---
