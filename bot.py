@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 import os
 import io
-import re   
+import re
+import gspread  # <--- NEW: Google Sheets library
 from flask import Flask
 from threading import Thread
 from datetime import datetime, timedelta, timezone
@@ -35,29 +36,56 @@ NOTIFY_ROLE_ID = 1558034567766474762
 WELCOME_CHANNEL_ID = 1557900784413188107 
 ADMIN_ROLE_ID = 1557901221669642253 
 RECORD_CHANNEL_ID = 1559322818116591666 
-TICKET_CATEGORY_ID = 1559324491543351307
+TICKET_CATEGORY_ID = 1559324491543351307 
 
-# --- Archiving Function ---
+# THE ID OF THE GOOGLE SHEET I CREATED FOR YOU:
+GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
+
+# --- Archiving & Google Sheets Function ---
 async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
-    await interaction.response.send_message("Archiving and closing ticket... please wait.", ephemeral=True)
+    await interaction.response.send_message("Archiving, syncing to Google Sheets, and closing ticket... please wait.", ephemeral=True)
     
-    # Fetch all messages in the ticket
     messages = [m async for m in channel.history(limit=None, oldest_first=True)]
     
     transcript = ""
-    extracted_name = ""
+    
+    # Defaults in case they don't fill out a specific line
+    extracted_name = "N/A"
+    extracted_email = "N/A"
+    extracted_contact = "N/A"
+    extracted_address = "N/A"
+    extracted_courier = "N/A"
+    extracted_payment = "N/A"
+    extracted_item = "N/A"
+    
     files_to_send = []
     
     for msg in messages:
-        # Format the timestamp
         time_str = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
         transcript += f"[{time_str}] {msg.author.name}: {msg.clean_content}\n"
         
-        # Look for the buyer's real name if they filled out the form
-        if not extracted_name and not msg.author.bot:
+        # Bot's message about selection (to figure out what they bought)
+        if msg.author.bot and "You selected: **" in msg.clean_content:
+            match = re.search(r'You selected: \*\*(.*?)\*\*', msg.clean_content)
+            if match:
+                extracted_item = match.group(1)
+                
+        # Parse the user's form submission
+        if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
-                if line.strip().lower().startswith("name:"):
-                    extracted_name = line.split(":", 1)[1].strip()
+                line_lower = line.strip().lower()
+                if line_lower.startswith("name:"):
+                    extracted_name = line.split(":", 1)[1].strip() or "N/A"
+                elif line_lower.startswith("email:"):
+                    extracted_email = line.split(":", 1)[1].strip() or "N/A"
+                elif line_lower.startswith("contact number:"):
+                    extracted_contact = line.split(":", 1)[1].strip() or "N/A"
+                elif line_lower.startswith("complete delivery address:"):
+                    extracted_address = line.split(":", 1)[1].strip() or "N/A"
+                elif line_lower.startswith("preferred courier:"):
+                    extracted_courier = line.split(":", 1)[1].strip() or "N/A"
+                elif line_lower.startswith("mode of payment:"):
+                    extracted_payment = line.split(":", 1)[1].strip() or "N/A"
         
         # Download images/attachments to memory
         for attachment in msg.attachments:
@@ -68,27 +96,46 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
             except Exception:
                 pass
 
-    # Build the Thread Name
     buyer_discord_name = channel.name.replace("order-", "")
+    
     if user_cancelled:
         thread_name = f"{buyer_discord_name} (Cancelled)"
     else:
-        thread_name = f"{buyer_discord_name} ({extracted_name})" if extracted_name else f"{buyer_discord_name} (No Name)"
+        thread_name = f"{buyer_discord_name} ({extracted_name if extracted_name != 'N/A' else 'No Name'})"
 
-    # Send to Record Channel
+        # --- GOOGLE SHEETS LIVE SYNC ---
+        try:
+            # Tell gspread to log in using the secret file we uploaded to Render
+            gc = gspread.service_account(filename='google_credentials.json')
+            sh = gc.open_by_key(GOOGLE_SHEET_ID)
+            worksheet = sh.sheet1
+            
+            ph_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # The data that gets pushed to your Google Sheet!
+            row_data = [
+                ph_time, 
+                buyer_discord_name, 
+                extracted_name, 
+                extracted_email, 
+                extracted_contact, 
+                extracted_address, 
+                extracted_courier, 
+                extracted_payment, 
+                extracted_item, 
+                "Discord Order (Discord Member Discount Applied)"
+            ]
+            worksheet.append_row(row_data)
+        except Exception as e:
+            print(f"Error syncing to Google Sheets: {e}")
+
+    # Send to Record Channel in Discord
     record_channel = interaction.guild.get_channel(RECORD_CHANNEL_ID)
     if record_channel:
-        # Create a thread in the records channel
-        thread = await record_channel.create_thread(
-            name=thread_name,
-            type=discord.ChannelType.public_thread
-        )
-        
-        # Send the transcript .txt file
+        thread = await record_channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread)
         transcript_file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename="transcript.txt")
         await thread.send(content=f"**Ticket log for {buyer_discord_name}:**", file=transcript_file)
         
-        # Discord limits 10 files per message, so we send images in chunks
         chunk_size = 10
         for i in range(0, len(files_to_send), chunk_size):
             await thread.send(files=files_to_send[i:i+chunk_size])
@@ -116,7 +163,6 @@ class ConfirmationView(discord.ui.View):
         
     @discord.ui.button(label="Yes, Proceed", style=discord.ButtonStyle.green, custom_id="proceed_yes")
     async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Disable these buttons so they can't be clicked again
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
@@ -132,13 +178,11 @@ class ConfirmationView(discord.ui.View):
             "*Once you send this, an admin will be with you shortly to assist with payment!*"
         )
         
-        # Summon the admin Close Button alongside the form
         close_view = CloseTicketView()
         await interaction.channel.send(form_text, view=close_view)
         
     @discord.ui.button(label="No, Cancel", style=discord.ButtonStyle.red, custom_id="proceed_no")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Automatically close and archive as cancelled
         await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
 
 
@@ -174,6 +218,7 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="🛒 Order Now", style=discord.ButtonStyle.blurple, custom_id="open_ticket_button")
     async def order(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
+        category = guild.get_channel(TICKET_CATEGORY_ID)
         
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -181,10 +226,6 @@ class TicketView(discord.ui.View):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         }
         
-# Fetch the category
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        
-        # Create the private channel inside the category
         ticket_channel = await guild.create_text_channel(
             name=f"order-{interaction.user.name}",
             category=category,
@@ -256,7 +297,6 @@ class ConfirmView(discord.ui.View):
             attachment = self.draft_message.attachments[0]
             attachment_url = attachment.url
             
-            # Display image in embed if it's an image, otherwise prepare it as an attached file
             if attachment.content_type and attachment.content_type.startswith('image/'):
                 embed.set_image(url=attachment.url)
             else:
@@ -268,7 +308,6 @@ class ConfirmView(discord.ui.View):
                     
         notify_text = f"<@&{NOTIFY_ROLE_ID}>\n**ANNOUNCEMENT!**"
         
-        # Build the buttons view
         link_view = discord.ui.View()
         has_buttons = False
         
@@ -283,7 +322,6 @@ class ConfirmView(discord.ui.View):
             
         view_to_pass = link_view if has_buttons else None
         
-        # Send announcement with or without a physical file attachment
         if file_to_send:
             await self.announce_channel.send(content=notify_text, embed=embed, view=view_to_pass, file=file_to_send)
         else:
@@ -347,15 +385,13 @@ async def on_member_join(member):
 @bot.command()
 async def gcash(ctx):
     embed = discord.Embed(title="GCash Payment", description="Please scan the QR code below to proceed with your GCash payment.", color=0x00529B)
-    # Replace the link below with your actual GCash QR code image link
-    embed.set_image(url="https://i.imgur.com/YOUR_GCASH_LINK_HERE.png")
+    embed.set_image(url="https://i.imgur.com/YOUR_GCASH_LINK_HERE.png") # UPDATE THIS LINK
     await ctx.send(embed=embed)
 
 @bot.command()
 async def maya(ctx):
     embed = discord.Embed(title="Maya Payment", description="Please scan the QR code below to proceed with your Maya payment.", color=0x000000)
-    # Replace the link below with your actual Maya QR code image link
-    embed.set_image(url="https://i.imgur.com/YOUR_MAYA_LINK_HERE.png")
+    embed.set_image(url="https://i.imgur.com/YOUR_MAYA_LINK_HERE.png") # UPDATE THIS LINK
     await ctx.send(embed=embed)
 
 # Start the web server and bot
