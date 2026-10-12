@@ -34,7 +34,8 @@ ANNOUNCE_CHANNEL_ID = 1557950064679321721
 NOTIFY_ROLE_ID = 1558034567766474762
 WELCOME_CHANNEL_ID = 1557900784413188107 
 ADMIN_ROLE_ID = 1557901221669642253 
-RECORD_CHANNEL_ID = 1559322818116591666  
+RECORD_CHANNEL_ID = 1559322818116591666 
+TICKET_CATEGORY_ID = 1559324491543351307
 
 # --- Archiving Function ---
 async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
@@ -180,8 +181,13 @@ class TicketView(discord.ui.View):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         }
         
+# Fetch the category
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+        
+        # Create the private channel inside the category
         ticket_channel = await guild.create_text_channel(
             name=f"order-{interaction.user.name}",
+            category=category,
             overwrites=overwrites
         )
         
@@ -336,6 +342,21 @@ async def on_member_join(member):
     embed.set_footer(text=f"You are our {member_count} doorling! | {ph_time}")
     
     await channel.send(embed=embed)
+
+# --- Payment QR Commands ---
+@bot.command()
+async def gcash(ctx):
+    embed = discord.Embed(title="GCash Payment", description="Please scan the QR code below to proceed with your GCash payment.", color=0x00529B)
+    # Replace the link below with your actual GCash QR code image link
+    embed.set_image(url="https://i.imgur.com/YOUR_GCASH_LINK_HERE.png")
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def maya(ctx):
+    embed = discord.Embed(title="Maya Payment", description="Please scan the QR code below to proceed with your Maya payment.", color=0x000000)
+    # Replace the link below with your actual Maya QR code image link
+    embed.set_image(url="https://i.imgur.com/YOUR_MAYA_LINK_HERE.png")
+    await ctx.send(embed=embed)
 
 # Start the web server and bot
 keep_alive()
