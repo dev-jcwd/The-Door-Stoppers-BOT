@@ -38,7 +38,7 @@ ADMIN_ROLE_ID = 1557901221669642253
 RECORD_CHANNEL_ID = 1559322818116591666 
 TICKET_CATEGORY_ID = 1559324491543351307 
 
-# THE ID OF THE GOOGLE SHEET
+# THE ID OF THE GOOGLE SHEET FOR BACKUPS:
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
 
 # --- Archiving & Google Sheets Function ---
@@ -105,14 +105,12 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
 
         # --- GOOGLE SHEETS LIVE SYNC ---
         try:
-            # Tell gspread to log in using the secret file we uploaded to Render
             gc = gspread.service_account(filename='google_credentials.json')
             sh = gc.open_by_key(GOOGLE_SHEET_ID)
             worksheet = sh.sheet1
             
             ph_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
             
-            # The data that gets pushed to your Google Sheet!
             row_data = [
                 ph_time, 
                 buyer_discord_name, 
@@ -126,7 +124,6 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
                 "Discord Order (Discord Member Discount Applied)"
             ]
             worksheet.append_row(row_data)
-            # Automatically center-align Columns A through J
             worksheet.format("A:J", {"horizontalAlignment": "CENTER"})
         except Exception as e:
             print(f"Error syncing to Google Sheets: {e}")
@@ -383,18 +380,18 @@ async def on_member_join(member):
     
     await channel.send(embed=embed)
 
-# --- Payment QR Commands ---
+
+# --- Payment QR Command ---
 @bot.command()
-async def gcash(ctx):
-    embed = discord.Embed(title="GCash Payment", description="Please scan the QR code below to proceed with your GCash payment.", color=0x00529B)
-    embed.set_image(url="https://i.imgur.com/YOUR_GCASH_LINK_HERE.png") # UPDATE THIS LINK
+async def payment(ctx):
+    embed = discord.Embed(
+        title="QRph Payment", 
+        description="Please scan the QRph code below to proceed with your payment. This works for GCash, Maya, and most banking apps.", 
+        color=0x00529B
+    )
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1559206358434316408/1559512388729045012/IMG_2956.jpg?ex=6acf5897&is=6ace0717&hm=9dcb62951b1063ee6eceff34c512c913e4af89e62462498fc171c409f067e054") # UPDATE THIS LINK
     await ctx.send(embed=embed)
 
-@bot.command()
-async def maya(ctx):
-    embed = discord.Embed(title="Maya Payment", description="Please scan the QR code below to proceed with your Maya payment.", color=0x000000)
-    embed.set_image(url="https://i.imgur.com/YOUR_MAYA_LINK_HERE.png") # UPDATE THIS LINK
-    await ctx.send(embed=embed)
 
 # Start the web server and bot
 keep_alive()
