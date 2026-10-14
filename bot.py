@@ -401,6 +401,21 @@ async def payment(ctx, option: str = "1"):
         
     await ctx.send(embed=embed)
 
+# --- Server Boost Tracker ---
+@bot.event
+async def on_member_update(before, after):
+    # Check if the user's profile updated to include a boost timestamp
+    if before.premium_since is None and after.premium_since is not None:
+        gen_chat = bot.get_channel(1557900784413188111)
+        if gen_chat:
+            embed = discord.Embed(
+                title="🚀 NEW SERVER BOOST! 🚀",
+                description=f"Huge thanks to {after.mention} for boosting the server!\n\nYour support helps us keep the music playing and the doors open. We appreciate you! 🎵🚪",
+                color=0xF47FFF  # Discord Nitro Pink
+            )
+            embed.set_thumbnail(url=after.display_avatar.url)
+            await gen_chat.send(embed=embed)
+
 
 # Start the web server and bot
 keep_alive()
