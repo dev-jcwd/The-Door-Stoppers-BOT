@@ -383,13 +383,22 @@ async def on_member_join(member):
 
 # --- Payment QR Command ---
 @bot.command()
-async def payment(ctx):
-    embed = discord.Embed(
-        title="QRph Payment", 
-        description="Please scan the QRph code below to proceed with your payment. This works for GCash, Maya, and most banking apps.", 
-        color=0x00529B
-    )
-    embed.set_image(url="https://cdn.discordapp.com/attachments/1559206358434316408/1559512388729045012/IMG_2956.jpg?ex=6acf5897&is=6ace0717&hm=9dcb62951b1063ee6eceff34c512c913e4af89e62462498fc171c409f067e054") # UPDATE THIS LINK
+async def payment(ctx, option: str = "1"):
+    if option == "2":
+        embed = discord.Embed(
+            title="Backup Payment Method", 
+            description="Please use this backup QR code to proceed with your payment.", 
+            color=0x000000
+        )
+        embed.set_image(url="https://cdn.discordapp.com/attachments/1553732228096200746/1559726575497510912/Band_Payment__Tips_1.png?ex=6ad02011&is=6acece91&hm=50d7563ea0a018cec3bc822eeb98c27ce33b6fe6601c92528f0011a491e15f1b") # UPDATE BACKUP LINK
+    else:
+        embed = discord.Embed(
+            title="QRph Payment", 
+            description="Please scan the QRph code below to proceed with your payment. This works for GCash, Maya, and most banking apps.", 
+            color=0x00529B
+        )
+        embed.set_image(url="https://cdn.discordapp.com/attachments/1553732228096200746/1559726524683264120/Band_Payment__Tips.png?ex=6ad02005&is=6acece85&hm=30a9dd249941008d94290f21107aad67d1f4e19de20d336537c488d23664ced1") # UPDATE PRIMARY LINK
+        
     await ctx.send(embed=embed)
 
 
