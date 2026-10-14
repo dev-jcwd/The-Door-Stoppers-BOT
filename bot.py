@@ -390,7 +390,7 @@ async def payment(ctx, option: str = "1"):
             description="Please use this backup QR code to proceed with your payment.", 
             color=0x000000
         )
-        embed.set_image(url="hhttps://cdn.discordapp.com/attachments/1553732228096200746/1559726524683264120/Band_Payment__Tips.png?ex=6ad02005&is=6acece85&hm=30a9dd249941008d94290f21107aad67d1f4e19de20d336537c488d23664ced1") # UPDATE BACKUP LINK
+        embed.set_image(url="https://cdn.discordapp.com/attachments/1553732228096200746/1559726524683264120/Band_Payment__Tips.png?ex=6ad02005&is=6acece85&hm=30a9dd249941008d94290f21107aad67d1f4e19de20d336537c488d23664ced1") # UPDATE BACKUP LINK
     else:
         embed = discord.Embed(
             title="QRph Payment", 
