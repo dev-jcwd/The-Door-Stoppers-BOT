@@ -47,7 +47,7 @@ RECORD_CHANNEL_ID = 1559322818116591666
 TICKET_CATEGORY_ID = 1559324491543351307
 
 # Optional: Paste the "TDS - Members" Role ID here, or leave as 0 and the bot will auto-detect it by name!
-TDS_MEMBERS_ROLE_ID = 1557901221669642253
+TDS_MEMBERS_ROLE_ID = 0
 
 # --- Google Sheets & Google Drive IDs ---
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
@@ -318,6 +318,38 @@ def get_tds_members_role(guild):
     )
 
 
+# --- Sticky Message Helper for #ticket-records ---
+sticky_lock = asyncio.Lock()
+
+async def update_sticky_message(channel):
+    if not channel:
+        return
+    async with sticky_lock:
+        sticky_text = (
+            "# RECORDS BACK-UP\n"
+            f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/edit?usp=sharing"
+        )
+        try:
+            recent_msgs = [m async for m in channel.history(limit=15)]
+
+            # If the very last message in the channel is already the sticky note, leave it alone
+            if recent_msgs and recent_msgs[0].author == bot.user and recent_msgs[0].content.startswith("# RECORDS BACK-UP"):
+                return
+
+            # Delete old sticky notes so there are never duplicates
+            for msg in recent_msgs:
+                if msg.author == bot.user and msg.content.startswith("# RECORDS BACK-UP"):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+
+            # Send the new sticky note at the bottom silently (no notifications)
+            await channel.send(content=sticky_text, silent=True)
+        except Exception as e:
+            print(f"Sticky Message Error: {e}")
+
+
 # --- Archiving, Google Drive & Google Sheets Function ---
 async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
     await interaction.response.send_message(
@@ -458,6 +490,10 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         chunk_size = 10
         for i in range(0, len(discord_files), chunk_size):
             await thread.send(files=discord_files[i:i+chunk_size])
+
+    # Refresh the sticky note in #ticket-records so it stays below the new thread
+    if record_channel:
+        await update_sticky_message(record_channel)
 
     # 4. DELETE THE TICKET CHANNEL
     await channel.delete()
@@ -600,6 +636,11 @@ async def on_ready():
         bot.spotify_loop_started = True
         bot.loop.create_task(spotify_activity_loop())
 
+    # Ensure the sticky note is posted in #ticket-records on startup
+    record_channel = bot.get_channel(RECORD_CHANNEL_ID)
+    if record_channel:
+        await update_sticky_message(record_channel)
+
     print(f'Logged in successfully as {bot.user.name}!')
 
 
@@ -705,6 +746,10 @@ async def on_message(message):
             announce_channel = bot.get_channel(ANNOUNCE_CHANNEL_ID)
             view = ConfirmView(message, announce_channel)
             await message.channel.send("Do you want to send this as an official announcement?", view=view)
+
+    # Keep the sticky note at the very bottom if someone chats in #ticket-records
+    if message.channel.id == RECORD_CHANNEL_ID:
+        await update_sticky_message(message.channel)
 
     await bot.process_commands(message)
 
