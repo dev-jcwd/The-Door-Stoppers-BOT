@@ -4,8 +4,10 @@ import os
 import io
 import re
 import json
+import base64
 import asyncio
 import itertools
+import requests
 import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
@@ -44,16 +46,21 @@ ADMIN_ROLE_ID = 1557901221669642253
 RECORD_CHANNEL_ID = 1559322818116591666
 TICKET_CATEGORY_ID = 1559324491543351307
 
+# Optional: Paste the "TDS - Members" Role ID here, or leave as 0 and the bot will auto-detect it by name!
+TDS_MEMBERS_ROLE_ID = 1557901221669642253
+
 # --- Google Sheets & Google Drive IDs ---
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
 DRIVE_MAIN_FOLDER_ID = "1FdR9bUPW-uHkgLrCn0zvf-V-0jfhDKEp"
+# Optional: Paste your Google Apps Script Web App URL here, OR put it in Cell B3 of your "Settings" sheet!
+DRIVE_APPS_SCRIPT_URL = ""
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# --- The Door Stoppers Spotify Playlist Loop (With Fake Live Timer) ---
+# --- The Door Stoppers Spotify Playlist Loop (With Live Imitation Timer) ---
 TDS_PLAYLIST = itertools.cycle([
     ("Light Me Up", 210),
     ("I'll Be Around", 205),
@@ -78,7 +85,7 @@ def build_progress_bar(elapsed, total, length=9):
 
 async def spotify_activity_loop():
     await bot.wait_until_ready()
-    step = 15  # Updates every 15 seconds (safe from Discord rate limits)
+    step = 15  # Updates every 15 seconds to stay safe from Discord rate limits
 
     while not bot.is_closed():
         song_title, duration = next(TDS_PLAYLIST)
@@ -91,33 +98,35 @@ async def spotify_activity_loop():
             total_str = format_mm_ss(duration)
             bar = build_progress_bar(elapsed, duration, length=9)
 
-            # STYLE 1: Song & Artist in bold, Timer + Bar underneath
             activity = discord.Activity(
                 type=discord.ActivityType.listening,
-                name=f"{song_title} - The Door Stoppers",
-                state=f"{current_str} {bar} {total_str}"
+                name="Spotify",
+                state=f"{song_title} • {current_str} {bar} {total_str}"
             )
-
             await bot.change_presence(status=discord.Status.online, activity=activity)
             await asyncio.sleep(step)
 
 
-# --- Helper: Upload a File to Google Drive ---
-def upload_file_to_drive(authed_session, folder_id, filename, file_bytes, content_type):
-    metadata = {
-        "name": filename,
-        "parents": [folder_id]
-    }
-    files = {
-        "data": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
-        "file": (filename, file_bytes, content_type)
-    }
+# --- Helper: Fallback Direct Multipart Upload (Used only if Apps Script URL is not set) ---
+def upload_file_to_drive_direct(authed_session, folder_id, filename, file_bytes, content_type):
+    boundary = "===TDS_DRIVE_UPLOAD_BOUNDARY==="
+    metadata_bytes = json.dumps({"name": filename, "parents": [folder_id]}).encode("utf-8")
+    body = (
+        f"--{boundary}\r\n"
+        f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+    ).encode("utf-8") + metadata_bytes + (
+        f"\r\n--{boundary}\r\n"
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8") + file_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    headers = {"Content-Type": f"multipart/related; boundary={boundary}"}
     res = authed_session.post(
         "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true",
-        files=files
+        data=body,
+        headers=headers
     )
     if res.status_code not in (200, 201):
-        print(f"Drive File Upload Warning ({filename}): {res.text}")
+        print(f"Direct Drive File Upload Error ({filename}): {res.text}")
 
 
 # --- Helper: Sync Order to Google Drive & Google Sheets (Runs in Background Thread) ---
@@ -144,31 +153,109 @@ def sync_order_to_google(
     safe_item = re.sub(r'[\\/*?:"<>|]', '-', extracted_item).strip()
     safe_payment = re.sub(r'[\\/*?:"<>|]', '-', extracted_payment).strip()
 
-    # Format: <Username/Name What they bought Payment used>
     subfolder_name = f"{safe_user} - {safe_name} | {safe_item} | {safe_payment} ({ph_date_short})"
+    folder_description = (
+        f"Buyer: {extracted_name} ({buyer_discord_name})\n"
+        f"Item: {extracted_item}\n"
+        f"Payment: {extracted_payment}\n"
+        f"Discord Thread: {thread_url}"
+    )
 
     creds = Credentials.from_service_account_file("google_credentials.json", scopes=GOOGLE_SCOPES)
     authed_session = AuthorizedSession(creds)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
 
-    # 1. CREATE GOOGLE DRIVE SUBFOLDER & UPLOAD RECEIPTS
-    if DRIVE_MAIN_FOLDER_ID:
+    # Check if the user added the Google Apps Script Web App URL in Settings!B3
+    script_url = DRIVE_APPS_SCRIPT_URL.strip()
+    if not script_url:
+        try:
+            settings_sheet = sh.worksheet("Settings")
+            cell_b3 = settings_sheet.acell("B3").value
+            if cell_b3 and cell_b3.strip().startswith("https://script.google.com"):
+                script_url = cell_b3.strip()
+        except Exception:
+            pass
+
+    # Prepare files to save in the buyer's Google Drive folder
+    html_shortcut = (
+        f"<!DOCTYPE html><html><head>"
+        f"<meta http-equiv='refresh' content='0; url={thread_url}' />"
+        f"</head><body style='font-family:sans-serif;text-align:center;padding-top:50px;'>"
+        f"<h2>Redirecting to Discord Record Thread...</h2>"
+        f"<p><a href='{thread_url}'>Click here if you are not redirected automatically</a></p>"
+        f"</body></html>"
+    ).encode("utf-8")
+
+    files_payload = [
+        {
+            "name": "🔗 Open_Discord_Thread.html",
+            "mimeType": "text/html",
+            "base64Data": base64.b64encode(html_shortcut).decode("utf-8"),
+            "rawBytes": html_shortcut
+        },
+        {
+            "name": "transcript.txt",
+            "mimeType": "text/plain",
+            "base64Data": base64.b64encode(transcript_text.encode("utf-8")).decode("utf-8"),
+            "rawBytes": transcript_text.encode("utf-8")
+        }
+    ]
+
+    for idx, (att_name, att_bytes, att_type) in enumerate(raw_attachments, start=1):
+        files_payload.append({
+            "name": f"Receipt_{idx}_{att_name}",
+            "mimeType": att_type or "image/png",
+            "base64Data": base64.b64encode(att_bytes).decode("utf-8"),
+            "rawBytes": att_bytes
+        })
+
+    # 1A. UPLOAD VIA GOOGLE APPS SCRIPT BRIDGE (Bypasses Service Account 0-byte quota!)
+    if script_url:
+        try:
+            bridge_data = {
+                "parentFolderId": DRIVE_MAIN_FOLDER_ID,
+                "folderName": subfolder_name,
+                "description": folder_description,
+                "files": [
+                    {
+                        "name": f["name"],
+                        "mimeType": f["mimeType"],
+                        "base64Data": f["base64Data"]
+                    }
+                    for f in files_payload
+                ]
+            }
+            res = requests.post(
+                script_url,
+                data=json.dumps(bridge_data),
+                headers={"Content-Type": "text/plain;charset=utf-8"},
+                timeout=60
+            )
+            if res.status_code == 200:
+                res_json = res.json()
+                if res_json.get("status") == "success":
+                    drive_folder_url = res_json.get("folderUrl", "")
+                else:
+                    print(f"Apps Script Error: {res_json.get('message')}")
+            else:
+                print(f"Apps Script HTTP Error {res.status_code}: {res.text}")
+        except Exception as e:
+            print(f"Error calling Google Apps Script bridge: {e}")
+
+    # 1B. FALLBACK: Direct Drive API (If Apps Script URL is not set yet)
+    if not drive_folder_url and DRIVE_MAIN_FOLDER_ID:
         try:
             folder_metadata = {
                 "name": subfolder_name,
                 "mimeType": "application/vnd.google-apps.folder",
                 "parents": [DRIVE_MAIN_FOLDER_ID],
-                "description": (
-                    f"Buyer: {extracted_name} ({buyer_discord_name})\n"
-                    f"Item: {extracted_item}\n"
-                    f"Payment: {extracted_payment}\n"
-                    f"Discord Thread: {thread_url}"
-                )
+                "description": folder_description
             }
             folder_res = authed_session.post(
                 "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink&supportsAllDrives=true",
                 json=folder_metadata
             )
-
             if folder_res.status_code in (200, 201):
                 folder_data = folder_res.json()
                 subfolder_id = folder_data.get("id")
@@ -176,41 +263,13 @@ def sync_order_to_google(
                     "webViewLink",
                     f"https://drive.google.com/drive/folders/{subfolder_id}"
                 )
-
-                # A) Upload clickable HTML shortcut linking to the Discord Thread
-                html_shortcut = (
-                    f"<!DOCTYPE html><html><head>"
-                    f"<meta http-equiv='refresh' content='0; url={thread_url}' />"
-                    f"</head><body style='font-family:sans-serif;text-align:center;padding-top:50px;'>"
-                    f"<h2>Redirecting to Discord Record Thread...</h2>"
-                    f"<p><a href='{thread_url}'>Click here if you are not redirected automatically</a></p>"
-                    f"</body></html>"
-                ).encode("utf-8")
-                upload_file_to_drive(
-                    authed_session,
-                    subfolder_id,
-                    "🔗 Open_Discord_Thread.html",
-                    html_shortcut,
-                    "text/html"
-                )
-
-                # B) Upload full transcript.txt with the Discord link at the top
-                upload_file_to_drive(
-                    authed_session,
-                    subfolder_id,
-                    "transcript.txt",
-                    transcript_text.encode("utf-8"),
-                    "text/plain"
-                )
-
-                # C) Upload all receipt photos & attachments sent in the ticket
-                for idx, (att_name, att_bytes, att_type) in enumerate(raw_attachments, start=1):
-                    upload_file_to_drive(
+                for f in files_payload:
+                    upload_file_to_drive_direct(
                         authed_session,
                         subfolder_id,
-                        f"Receipt_{idx}_{att_name}",
-                        att_bytes,
-                        att_type or "application/octet-stream"
+                        f["name"],
+                        f["rawBytes"],
+                        f["mimeType"]
                     )
             else:
                 print(f"Drive Folder Creation Error: {folder_res.text}")
@@ -219,8 +278,6 @@ def sync_order_to_google(
 
     # 2. APPEND ORDER & CLICKABLE LINKS TO GOOGLE SHEETS
     try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(GOOGLE_SHEET_ID)
         worksheet = sh.sheet1
 
         thread_hyperlink = f'=HYPERLINK("{thread_url}", "💬 Open Thread")' if thread_url else "N/A"
@@ -241,13 +298,24 @@ def sync_order_to_google(
             drive_hyperlink                                     # Column L: Google Drive Folder Link
         ]
 
-        # USER_ENTERED allows the =HYPERLINK() formulas to become clickable links
         worksheet.append_row(row_data, value_input_option="USER_ENTERED")
         worksheet.format("A:L", {"horizontalAlignment": "CENTER"})
     except Exception as e:
         print(f"Error syncing to Google Sheets: {e}")
 
     return drive_folder_url
+
+
+# --- Helper: Find the "TDS - Members" Role ---
+def get_tds_members_role(guild):
+    if TDS_MEMBERS_ROLE_ID:
+        role = guild.get_role(TDS_MEMBERS_ROLE_ID)
+        if role:
+            return role
+    return discord.utils.find(
+        lambda r: r.name.lower().strip() in ("tds - members", "tds members", "tds - member"),
+        guild.roles
+    )
 
 
 # --- Archiving, Google Drive & Google Sheets Function ---
@@ -269,19 +337,17 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
     extracted_payment = "N/A"
     extracted_item = "N/A"
 
-    raw_attachments = []  # Stores (filename, bytes, content_type) for both Discord and Drive
+    raw_attachments = []
 
     for msg in messages:
         time_str = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
         transcript += f"[{time_str}] {msg.author.name}: {msg.clean_content}\n"
 
-        # Detect product selected
         if msg.author.bot and "You selected: **" in msg.clean_content:
             match = re.search(r'You selected: \*\*(.*?)\*\*', msg.clean_content)
             if match:
                 extracted_item = match.group(1)
 
-        # Parse the buyer's form submission
         if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
                 line_lower = line.strip().lower()
@@ -298,7 +364,6 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
                 elif line_lower.startswith("mode of payment:"):
                     extracted_payment = line.split(":", 1)[1].strip() or "N/A"
 
-        # Download receipt images/attachments to memory
         for attachment in msg.attachments:
             transcript += f" [Attachment logged: {attachment.filename}]\n"
             try:
@@ -319,19 +384,18 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         display_buyer = extracted_name if extracted_name != "N/A" else "No Name"
         thread_name = f"{buyer_discord_name} - {display_buyer} ({extracted_item})"
 
-    # 1. CREATE DISCORD RECORD THREAD FIRST (So we get the exact Thread Link!)
+    # 1. CREATE DISCORD RECORD THREAD FIRST
     record_channel = interaction.guild.get_channel(RECORD_CHANNEL_ID)
     thread = None
     thread_url = ""
 
     if record_channel:
         thread = await record_channel.create_thread(
-            name=thread_name[:100],  # Discord thread names max out at 100 chars
+            name=thread_name[:100],
             type=discord.ChannelType.public_thread
         )
         thread_url = f"https://discord.com/channels/{interaction.guild.id}/{thread.id}"
 
-    # Add header details to transcript
     full_transcript = (
         f"=== THE DOOR STOPPERS MERCH ORDER LOG ===\n"
         f"Date: {ph_time}\n"
@@ -344,7 +408,7 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         + transcript
     )
 
-    # 2. SYNC TO GOOGLE DRIVE & GOOGLE SHEETS (Only if not cancelled)
+    # 2. SYNC TO GOOGLE DRIVE & GOOGLE SHEETS
     drive_folder_url = ""
     if not user_cancelled:
         drive_folder_url = await asyncio.to_thread(
@@ -374,7 +438,6 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
             f"• **Receipts Saved:** {len(raw_attachments)} file(s)"
         )
 
-        # Add a button to open the Google Drive folder right from Discord
         drive_view = None
         if drive_folder_url:
             drive_view = discord.ui.View()
@@ -388,7 +451,6 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
 
         await thread.send(content=log_summary, file=transcript_file, view=drive_view)
 
-        # Reconstruct Discord File objects for the thread archive
         discord_files = [
             discord.File(io.BytesIO(f_bytes), filename=f_name)
             for f_name, f_bytes, _ in raw_attachments
@@ -408,10 +470,13 @@ class CloseTicketView(discord.ui.View):
 
     @discord.ui.button(label="🔒 Close & Archive Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_button")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.guild_permissions.administrator:
+        tds_role = get_tds_members_role(interaction.guild)
+        is_tds_member = tds_role in interaction.user.roles if tds_role else False
+
+        if interaction.user.guild_permissions.administrator or is_tds_member:
             await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=False)
         else:
-            await interaction.response.send_message("Only admins can close this ticket.", ephemeral=True)
+            await interaction.response.send_message("Only admins or TDS - Members can close this ticket.", ephemeral=True)
 
 
 class ConfirmationView(discord.ui.View):
@@ -480,12 +545,20 @@ class TicketView(discord.ui.View):
     async def order(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         category = guild.get_channel(TICKET_CATEGORY_ID)
+        tds_members_role = get_tds_members_role(guild)
+        admin_role = guild.get_role(ADMIN_ROLE_ID)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         }
+
+        # Give both Admin Role and "TDS - Members" Role access to see and chat in the ticket!
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+        if tds_members_role:
+            overwrites[tds_members_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
         ticket_channel = await guild.create_text_channel(
             name=f"order-{interaction.user.name}",
@@ -500,7 +573,19 @@ class TicketView(discord.ui.View):
             color=0xFFFF00
         )
 
-        await ticket_channel.send(content=f"<@&{ADMIN_ROLE_ID}>", embed=embed, view=selection_view)
+        # Build the role notification ping for both Admin and TDS - Members
+        ping_list = [f"<@&{ADMIN_ROLE_ID}>"]
+        if tds_members_role and tds_members_role.id != ADMIN_ROLE_ID:
+            ping_list.append(tds_members_role.mention)
+
+        ping_text = f"🔔 {' '.join(ping_list)} — **New Merch Order Ticket opened by {interaction.user.mention}!**"
+
+        await ticket_channel.send(
+            content=ping_text,
+            embed=embed,
+            view=selection_view,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
         await interaction.response.send_message(f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
 
 
@@ -511,7 +596,6 @@ async def on_ready():
     bot.add_view(ProductSelectionView())
     bot.add_view(ConfirmationView())
 
-    # Start the Spotify song rotation loop once
     if not hasattr(bot, "spotify_loop_started"):
         bot.spotify_loop_started = True
         bot.loop.create_task(spotify_activity_loop())
