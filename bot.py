@@ -53,7 +53,7 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# --- The Door Stoppers Spotify Playlist Loop ---
+# --- The Door Stoppers Spotify Playlist Loop (With Fake Live Timer) ---
 TDS_PLAYLIST = itertools.cycle([
     ("Light Me Up", 210),
     ("I'll Be Around", 205),
@@ -65,17 +65,41 @@ TDS_PLAYLIST = itertools.cycle([
     ("All the Things, All the Crazy Things", 210)
 ])
 
+def format_mm_ss(seconds):
+    mins = seconds // 60
+    secs = seconds % 60
+    return f"{mins:02d}:{secs:02d}"
+
+def build_progress_bar(elapsed, total, length=9):
+    progress = min(1.0, elapsed / total)
+    filled = int(round(length * progress))
+    empty = length - filled
+    return ("━" * filled) + ("─" * empty)
+
 async def spotify_activity_loop():
     await bot.wait_until_ready()
+    step = 15  # Updates every 15 seconds (safe from Discord rate limits)
+
     while not bot.is_closed():
         song_title, duration = next(TDS_PLAYLIST)
-        activity = discord.Activity(
-            type=discord.ActivityType.listening,
-            name="Spotify",
-            state=f"{song_title} • The Door Stoppers"
-        )
-        await bot.change_presence(status=discord.Status.online, activity=activity)
-        await asyncio.sleep(duration)
+
+        for elapsed in range(0, duration + 1, step):
+            if bot.is_closed():
+                return
+
+            current_str = format_mm_ss(elapsed)
+            total_str = format_mm_ss(duration)
+            bar = build_progress_bar(elapsed, duration, length=9)
+
+            # STYLE 1: Song & Artist in bold, Timer + Bar underneath
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=f"{song_title} - The Door Stoppers",
+                state=f"{current_str} {bar} {total_str}"
+            )
+
+            await bot.change_presence(status=discord.Status.online, activity=activity)
+            await asyncio.sleep(step)
 
 
 # --- Helper: Upload a File to Google Drive ---
