@@ -3,7 +3,12 @@ from discord.ext import commands
 import os
 import io
 import re
+import json
+import asyncio
+import itertools
 import gspread
+from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import AuthorizedSession
 from flask import Flask
 from threading import Thread
 from datetime import datetime, timedelta, timezone
@@ -29,27 +34,209 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- Replace these with your actual Discord IDs! ---
+# --- Discord Channel & Role IDs ---
 DRAFT_CHANNEL_ID = 1558478062558122106
 ANNOUNCE_CHANNEL_ID = 1557950064679321721
 NOTIFY_ROLE_ID = 1558034567766474762
-WELCOME_CHANNEL_ID = 1557900784413188107 
-ADMIN_ROLE_ID = 1557901221669642253 
-RECORD_CHANNEL_ID = 1559322818116591666 
-TICKET_CATEGORY_ID = 1559324491543351307 
+WELCOME_CHANNEL_ID = 1557900784413188107
+GENERAL_CHANNEL_ID = 1557900784413188111
+ADMIN_ROLE_ID = 1557901221669642253
+RECORD_CHANNEL_ID = 1559322818116591666
+TICKET_CATEGORY_ID = 1559324491543351307
 
-# THE ID OF THE GOOGLE SHEET FOR BACKUPS:
+# --- Google Sheets & Google Drive IDs ---
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
+DRIVE_MAIN_FOLDER_ID = "1FdR9bUPW-uHkgLrCn0zvf-V-0jfhDKEp"
 
-# --- Archiving & Google Sheets Function ---
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+# --- The Door Stoppers Spotify Playlist Loop ---
+TDS_PLAYLIST = itertools.cycle([
+    ("Light Me Up", 210),
+    ("I'll Be Around", 205),
+    ("Whatever", 195),
+    ("Pillars", 220),
+    ("Circles", 215),
+    ("I Don't Need You", 190),
+    ("Fight for My Way", 200),
+    ("All the Things, All the Crazy Things", 210)
+])
+
+async def spotify_activity_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        song_title, duration = next(TDS_PLAYLIST)
+        activity = discord.Activity(
+            type=discord.ActivityType.listening,
+            name="Spotify",
+            state=f"{song_title} • The Door Stoppers"
+        )
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+        await asyncio.sleep(duration)
+
+
+# --- Helper: Upload a File to Google Drive ---
+def upload_file_to_drive(authed_session, folder_id, filename, file_bytes, content_type):
+    metadata = {
+        "name": filename,
+        "parents": [folder_id]
+    }
+    files = {
+        "data": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
+        "file": (filename, file_bytes, content_type)
+    }
+    res = authed_session.post(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true",
+        files=files
+    )
+    if res.status_code not in (200, 201):
+        print(f"Drive File Upload Warning ({filename}): {res.text}")
+
+
+# --- Helper: Sync Order to Google Drive & Google Sheets (Runs in Background Thread) ---
+def sync_order_to_google(
+    ph_time,
+    ph_date_short,
+    buyer_discord_name,
+    extracted_name,
+    extracted_email,
+    extracted_contact,
+    extracted_address,
+    extracted_courier,
+    extracted_payment,
+    extracted_item,
+    thread_url,
+    transcript_text,
+    raw_attachments
+):
+    drive_folder_url = ""
+
+    # Clean text so slashes don't break folder names
+    safe_user = re.sub(r'[\\/*?:"<>|]', '-', buyer_discord_name).strip()
+    safe_name = re.sub(r'[\\/*?:"<>|]', '-', extracted_name if extracted_name != "N/A" else "No Name").strip()
+    safe_item = re.sub(r'[\\/*?:"<>|]', '-', extracted_item).strip()
+    safe_payment = re.sub(r'[\\/*?:"<>|]', '-', extracted_payment).strip()
+
+    # Format: <Username/Name What they bought Payment used>
+    subfolder_name = f"{safe_user} - {safe_name} | {safe_item} | {safe_payment} ({ph_date_short})"
+
+    creds = Credentials.from_service_account_file("google_credentials.json", scopes=GOOGLE_SCOPES)
+    authed_session = AuthorizedSession(creds)
+
+    # 1. CREATE GOOGLE DRIVE SUBFOLDER & UPLOAD RECEIPTS
+    if DRIVE_MAIN_FOLDER_ID:
+        try:
+            folder_metadata = {
+                "name": subfolder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [DRIVE_MAIN_FOLDER_ID],
+                "description": (
+                    f"Buyer: {extracted_name} ({buyer_discord_name})\n"
+                    f"Item: {extracted_item}\n"
+                    f"Payment: {extracted_payment}\n"
+                    f"Discord Thread: {thread_url}"
+                )
+            }
+            folder_res = authed_session.post(
+                "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink&supportsAllDrives=true",
+                json=folder_metadata
+            )
+
+            if folder_res.status_code in (200, 201):
+                folder_data = folder_res.json()
+                subfolder_id = folder_data.get("id")
+                drive_folder_url = folder_data.get(
+                    "webViewLink",
+                    f"https://drive.google.com/drive/folders/{subfolder_id}"
+                )
+
+                # A) Upload clickable HTML shortcut linking to the Discord Thread
+                html_shortcut = (
+                    f"<!DOCTYPE html><html><head>"
+                    f"<meta http-equiv='refresh' content='0; url={thread_url}' />"
+                    f"</head><body style='font-family:sans-serif;text-align:center;padding-top:50px;'>"
+                    f"<h2>Redirecting to Discord Record Thread...</h2>"
+                    f"<p><a href='{thread_url}'>Click here if you are not redirected automatically</a></p>"
+                    f"</body></html>"
+                ).encode("utf-8")
+                upload_file_to_drive(
+                    authed_session,
+                    subfolder_id,
+                    "🔗 Open_Discord_Thread.html",
+                    html_shortcut,
+                    "text/html"
+                )
+
+                # B) Upload full transcript.txt with the Discord link at the top
+                upload_file_to_drive(
+                    authed_session,
+                    subfolder_id,
+                    "transcript.txt",
+                    transcript_text.encode("utf-8"),
+                    "text/plain"
+                )
+
+                # C) Upload all receipt photos & attachments sent in the ticket
+                for idx, (att_name, att_bytes, att_type) in enumerate(raw_attachments, start=1):
+                    upload_file_to_drive(
+                        authed_session,
+                        subfolder_id,
+                        f"Receipt_{idx}_{att_name}",
+                        att_bytes,
+                        att_type or "application/octet-stream"
+                    )
+            else:
+                print(f"Drive Folder Creation Error: {folder_res.text}")
+        except Exception as e:
+            print(f"Error uploading to Google Drive: {e}")
+
+    # 2. APPEND ORDER & CLICKABLE LINKS TO GOOGLE SHEETS
+    try:
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        worksheet = sh.sheet1
+
+        thread_hyperlink = f'=HYPERLINK("{thread_url}", "💬 Open Thread")' if thread_url else "N/A"
+        drive_hyperlink = f'=HYPERLINK("{drive_folder_url}", "📁 View Receipts")' if drive_folder_url else "Drive Error"
+
+        row_data = [
+            ph_time,                                            # Column A: Date
+            buyer_discord_name,                                 # Column B: Discord User
+            extracted_name,                                     # Column C: Full Name
+            extracted_email,                                    # Column D: Email
+            extracted_contact,                                  # Column E: Contact Number
+            extracted_address,                                  # Column F: Address
+            extracted_courier,                                  # Column G: Courier
+            extracted_payment,                                  # Column H: Payment Mode
+            extracted_item,                                     # Column I: Item Ordered
+            "Discord Order (Discord Member Discount Applied)",  # Column J: Source/Notes
+            thread_hyperlink,                                   # Column K: Discord Thread Link
+            drive_hyperlink                                     # Column L: Google Drive Folder Link
+        ]
+
+        # USER_ENTERED allows the =HYPERLINK() formulas to become clickable links
+        worksheet.append_row(row_data, value_input_option="USER_ENTERED")
+        worksheet.format("A:L", {"horizontalAlignment": "CENTER"})
+    except Exception as e:
+        print(f"Error syncing to Google Sheets: {e}")
+
+    return drive_folder_url
+
+
+# --- Archiving, Google Drive & Google Sheets Function ---
 async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
-    await interaction.response.send_message("Archiving, syncing to Google Sheets, and closing ticket... please wait.", ephemeral=True)
-    
+    await interaction.response.send_message(
+        "Archiving receipts to Google Drive, syncing to Google Sheets, and closing ticket... please wait.",
+        ephemeral=True
+    )
+
     messages = [m async for m in channel.history(limit=None, oldest_first=True)]
-    
+
     transcript = ""
-    
-    # Defaults in case they don't fill out a specific line
+
     extracted_name = "N/A"
     extracted_email = "N/A"
     extracted_contact = "N/A"
@@ -57,20 +244,20 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
     extracted_courier = "N/A"
     extracted_payment = "N/A"
     extracted_item = "N/A"
-    
-    files_to_send = []
-    
+
+    raw_attachments = []  # Stores (filename, bytes, content_type) for both Discord and Drive
+
     for msg in messages:
         time_str = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
         transcript += f"[{time_str}] {msg.author.name}: {msg.clean_content}\n"
-        
-        # Bot's message about selection (to figure out what they bought)
+
+        # Detect product selected
         if msg.author.bot and "You selected: **" in msg.clean_content:
             match = re.search(r'You selected: \*\*(.*?)\*\*', msg.clean_content)
             if match:
                 extracted_item = match.group(1)
-                
-        # Parse the user's form submission
+
+        # Parse the buyer's form submission
         if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
                 line_lower = line.strip().lower()
@@ -86,60 +273,107 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
                     extracted_courier = line.split(":", 1)[1].strip() or "N/A"
                 elif line_lower.startswith("mode of payment:"):
                     extracted_payment = line.split(":", 1)[1].strip() or "N/A"
-        
-        # Download images/attachments to memory
+
+        # Download receipt images/attachments to memory
         for attachment in msg.attachments:
             transcript += f" [Attachment logged: {attachment.filename}]\n"
             try:
                 file_bytes = await attachment.read()
-                files_to_send.append(discord.File(io.BytesIO(file_bytes), filename=f"{msg.author.name}_{attachment.filename}"))
+                clean_fname = f"{msg.author.name}_{attachment.filename}"
+                raw_attachments.append((clean_fname, file_bytes, attachment.content_type))
             except Exception:
                 pass
 
     buyer_discord_name = channel.name.replace("order-", "")
-    
+    now_ph = datetime.now(timezone(timedelta(hours=8)))
+    ph_time = now_ph.strftime("%Y-%m-%d %H:%M:%S")
+    ph_date_short = now_ph.strftime("%Y-%m-%d")
+
     if user_cancelled:
         thread_name = f"{buyer_discord_name} (Cancelled)"
     else:
-        thread_name = f"{buyer_discord_name} ({extracted_name if extracted_name != 'N/A' else 'No Name'})"
+        display_buyer = extracted_name if extracted_name != "N/A" else "No Name"
+        thread_name = f"{buyer_discord_name} - {display_buyer} ({extracted_item})"
 
-        # --- GOOGLE SHEETS LIVE SYNC ---
-        try:
-            gc = gspread.service_account(filename='google_credentials.json')
-            sh = gc.open_by_key(GOOGLE_SHEET_ID)
-            worksheet = sh.sheet1
-            
-            ph_time = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
-            
-            row_data = [
-                ph_time, 
-                buyer_discord_name, 
-                extracted_name, 
-                extracted_email, 
-                extracted_contact, 
-                extracted_address, 
-                extracted_courier, 
-                extracted_payment, 
-                extracted_item, 
-                "Discord Order (Discord Member Discount Applied)"
-            ]
-            worksheet.append_row(row_data)
-            worksheet.format("A:J", {"horizontalAlignment": "CENTER"})
-        except Exception as e:
-            print(f"Error syncing to Google Sheets: {e}")
-
-    # Send to Record Channel in Discord
+    # 1. CREATE DISCORD RECORD THREAD FIRST (So we get the exact Thread Link!)
     record_channel = interaction.guild.get_channel(RECORD_CHANNEL_ID)
-    if record_channel:
-        thread = await record_channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread)
-        transcript_file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename="transcript.txt")
-        await thread.send(content=f"**Ticket log for {buyer_discord_name}:**", file=transcript_file)
-        
-        chunk_size = 10
-        for i in range(0, len(files_to_send), chunk_size):
-            await thread.send(files=files_to_send[i:i+chunk_size])
+    thread = None
+    thread_url = ""
 
-    # Delete the ticket channel
+    if record_channel:
+        thread = await record_channel.create_thread(
+            name=thread_name[:100],  # Discord thread names max out at 100 chars
+            type=discord.ChannelType.public_thread
+        )
+        thread_url = f"https://discord.com/channels/{interaction.guild.id}/{thread.id}"
+
+    # Add header details to transcript
+    full_transcript = (
+        f"=== THE DOOR STOPPERS MERCH ORDER LOG ===\n"
+        f"Date: {ph_time}\n"
+        f"Discord User: {buyer_discord_name}\n"
+        f"Buyer Name: {extracted_name}\n"
+        f"Item Ordered: {extracted_item}\n"
+        f"Payment Mode: {extracted_payment}\n"
+        f"Discord Thread Link: {thread_url}\n"
+        f"=========================================\n\n"
+        + transcript
+    )
+
+    # 2. SYNC TO GOOGLE DRIVE & GOOGLE SHEETS (Only if not cancelled)
+    drive_folder_url = ""
+    if not user_cancelled:
+        drive_folder_url = await asyncio.to_thread(
+            sync_order_to_google,
+            ph_time,
+            ph_date_short,
+            buyer_discord_name,
+            extracted_name,
+            extracted_email,
+            extracted_contact,
+            extracted_address,
+            extracted_courier,
+            extracted_payment,
+            extracted_item,
+            thread_url,
+            full_transcript,
+            raw_attachments
+        )
+
+    # 3. SEND FILES & GOOGLE DRIVE BUTTON TO DISCORD RECORD THREAD
+    if thread:
+        transcript_file = discord.File(io.BytesIO(full_transcript.encode('utf-8')), filename="transcript.txt")
+        log_summary = (
+            f"**Ticket log for {buyer_discord_name}** (`{extracted_name}`)\n"
+            f"• **Item:** {extracted_item}\n"
+            f"• **Payment:** {extracted_payment}\n"
+            f"• **Receipts Saved:** {len(raw_attachments)} file(s)"
+        )
+
+        # Add a button to open the Google Drive folder right from Discord
+        drive_view = None
+        if drive_folder_url:
+            drive_view = discord.ui.View()
+            drive_view.add_item(
+                discord.ui.Button(
+                    label="📁 Open Google Drive Receipt Folder",
+                    style=discord.ButtonStyle.link,
+                    url=drive_folder_url
+                )
+            )
+
+        await thread.send(content=log_summary, file=transcript_file, view=drive_view)
+
+        # Reconstruct Discord File objects for the thread archive
+        discord_files = [
+            discord.File(io.BytesIO(f_bytes), filename=f_name)
+            for f_name, f_bytes, _ in raw_attachments
+        ]
+        chunk_size = 10
+        for i in range(0, len(discord_files), chunk_size):
+            await thread.send(files=discord_files[i:i+chunk_size])
+
+    # 4. DELETE THE TICKET CHANNEL
     await channel.delete()
 
 
@@ -148,7 +382,7 @@ class CloseTicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_button")
+    @discord.ui.button(label="🔒 Close & Archive Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_button")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.guild_permissions.administrator:
             await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=False)
@@ -159,13 +393,13 @@ class CloseTicketView(discord.ui.View):
 class ConfirmationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        
+
     @discord.ui.button(label="Yes, Proceed", style=discord.ButtonStyle.green, custom_id="proceed_yes")
     async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(view=self)
-        
+
         form_text = (
             "**Awesome! Please fill out the form below by copying and pasting it into your chat:**\n\n"
             "Name:\n"
@@ -174,12 +408,12 @@ class ConfirmationView(discord.ui.View):
             "Complete Delivery Address:\n"
             "Preferred courier: Lalamove/J&T/LBC\n"
             "Mode of Payment: GCash/Maya\n\n"
-            "*Once you send this, an admin will be with you shortly to assist with payment!*"
+            "📸 *Once an admin sends the payment QR, please upload a **screenshot of your payment receipt** directly in this chat so we can verify and archive your order!*"
         )
-        
+
         close_view = CloseTicketView()
         await interaction.channel.send(form_text, view=close_view)
-        
+
     @discord.ui.button(label="No, Cancel", style=discord.ButtonStyle.red, custom_id="proceed_no")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
@@ -192,15 +426,19 @@ class ProductSelectionView(discord.ui.View):
     async def handle_selection(self, interaction, product, price):
         for child in self.children:
             child.disabled = True
-        
-        msg = f"You selected: **{product}**\nSince you are a Discord member, the price is **Php {price} + shipping fee**.\n\nWould you like to proceed?"
+
+        msg = (
+            f"You selected: **{product}**\n"
+            f"Since you are a Discord member, the price is **Php {price} + shipping fee**.\n\n"
+            f"Would you like to proceed?"
+        )
         confirm_view = ConfirmationView()
         await interaction.response.edit_message(content=msg, view=confirm_view)
 
     @discord.ui.button(label="T-Shirt Only", style=discord.ButtonStyle.primary, custom_id="sel_tshirt")
     async def select_tshirt(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_selection(interaction, "T-Shirt Only", 500)
-        
+
     @discord.ui.button(label="Pillars EP CD Only", style=discord.ButtonStyle.primary, custom_id="sel_cd")
     async def select_cd(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_selection(interaction, "Pillars EP CD Only", 300)
@@ -212,32 +450,32 @@ class ProductSelectionView(discord.ui.View):
 
 class TicketView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None) 
+        super().__init__(timeout=None)
 
     @discord.ui.button(label="🛒 Order Now", style=discord.ButtonStyle.blurple, custom_id="open_ticket_button")
     async def order(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         category = guild.get_channel(TICKET_CATEGORY_ID)
-        
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         }
-        
+
         ticket_channel = await guild.create_text_channel(
             name=f"order-{interaction.user.name}",
             category=category,
             overwrites=overwrites
         )
-        
+
         selection_view = ProductSelectionView()
         embed = discord.Embed(
             title="Merch Order Ticket",
             description=f"Welcome {interaction.user.mention}!\n\nWhat would you like to buy? Please select an option below:",
             color=0xFFFF00
         )
-        
+
         await ticket_channel.send(content=f"<@&{ADMIN_ROLE_ID}>", embed=embed, view=selection_view)
         await interaction.response.send_message(f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
 
@@ -249,8 +487,11 @@ async def on_ready():
     bot.add_view(ProductSelectionView())
     bot.add_view(ConfirmationView())
 
-    activity = discord.CustomActivity(name="🎵 The Door Stoppers on Spotify")
-    await bot.change_presence(status=discord.Status.online, activity=activity)
+    # Start the Spotify song rotation loop once
+    if not hasattr(bot, "spotify_loop_started"):
+        bot.spotify_loop_started = True
+        bot.loop.create_task(spotify_activity_loop())
+
     print(f'Logged in successfully as {bot.user.name}!')
 
 
@@ -261,17 +502,22 @@ async def merchpanel(ctx):
     view = TicketView()
     embed = discord.Embed(
         title="🎸 Grab Your Official The Door Stoppers Merch! 🚪",
-        description="Our physical **Pillars EP CDs** and official band tees are now available!\n\nYou can reach out to us on Instagram or TikTok, or simply place your order right here on Discord.\n\nClick the **Order Now** button below to open a private ticket with the band and secure your merch!",
+        description=(
+            "Our physical **Pillars EP CDs** and official band tees are now available!\n\n"
+            "You can reach out to us on Instagram or TikTok, or simply place your order right here on Discord.\n\n"
+            "Click the **Order Now** button below to open a private ticket with the band and secure your merch!"
+        ),
         color=0xFFFF00
     )
-    
+
     await ctx.send(embed=embed, view=view)
     await ctx.message.delete()
+
 
 # --- Automated Announcement System ---
 class ConfirmView(discord.ui.View):
     def __init__(self, draft_message, announce_channel):
-        super().__init__(timeout=None) 
+        super().__init__(timeout=None)
         self.draft_message = draft_message
         self.announce_channel = announce_channel
 
@@ -283,19 +529,19 @@ class ConfirmView(discord.ui.View):
 
         embed = discord.Embed(color=0xFFFF00)
         embed.set_author(name=self.draft_message.author.display_name, icon_url=self.draft_message.author.display_avatar.url)
-        
+
         url_match = None
         if self.draft_message.content:
             url_match = re.search(r'(https?://\S+)', self.draft_message.content)
             embed.description = self.draft_message.content
-            
+
         file_to_send = None
         attachment_url = None
-        
+
         if self.draft_message.attachments:
             attachment = self.draft_message.attachments[0]
             attachment_url = attachment.url
-            
+
             if attachment.content_type and attachment.content_type.startswith('image/'):
                 embed.set_image(url=attachment.url)
             else:
@@ -304,28 +550,28 @@ class ConfirmView(discord.ui.View):
                     file_to_send = discord.File(io.BytesIO(file_bytes), filename=attachment.filename)
                 except Exception:
                     pass
-                    
+
         notify_text = f"<@&{NOTIFY_ROLE_ID}>\n**ANNOUNCEMENT!**"
-        
+
         link_view = discord.ui.View()
         has_buttons = False
-        
+
         if url_match:
             extracted_url = url_match.group(1)
             link_view.add_item(discord.ui.Button(label="View Post", style=discord.ButtonStyle.link, url=extracted_url))
             has_buttons = True
-            
+
         if attachment_url:
             link_view.add_item(discord.ui.Button(label="Open File", style=discord.ButtonStyle.link, url=attachment_url))
             has_buttons = True
-            
+
         view_to_pass = link_view if has_buttons else None
-        
+
         if file_to_send:
             await self.announce_channel.send(content=notify_text, embed=embed, view=view_to_pass, file=file_to_send)
         else:
             await self.announce_channel.send(content=notify_text, embed=embed, view=view_to_pass)
-        
+
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content="✅ **Announcement sent!**", view=self)
@@ -335,7 +581,7 @@ class ConfirmView(discord.ui.View):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("Only admins can cancel announcements.", ephemeral=True)
             return
-        
+
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content="❌ **Announcement cancelled.**", view=self)
@@ -354,6 +600,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
 # --- Welcome Message System ---
 @bot.event
 async def on_member_join(member):
@@ -365,7 +612,7 @@ async def on_member_join(member):
         if 11 <= (n % 100) <= 13:
             return f"{n}th"
         return f"{n}" + {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
-        
+
     member_count = get_ordinal(member.guild.member_count)
     ph_time = datetime.now(timezone(timedelta(hours=8))).strftime("%m/%d/%Y %I:%M %p")
 
@@ -373,48 +620,63 @@ async def on_member_join(member):
         description="**Welcome to the world of doors!**\nPlease follow our [socials](https://www.submithub.com/link/thedoorstoppers)! Enjoy your stay.",
         color=0xFFFFFF
     )
-    
+
     embed.set_author(name=member.name, icon_url=member.display_avatar.url)
     embed.set_thumbnail(url=bot.user.display_avatar.url)
     embed.set_footer(text=f"You are our {member_count} doorling! | {ph_time}")
-    
+
     await channel.send(embed=embed)
 
-
-# --- Payment QR Command ---
-@bot.command()
-async def payment(ctx, option: str = "1"):
-    if option == "2":
-        embed = discord.Embed(
-            title="Backup Payment Method", 
-            description="Please use this backup QR code to proceed with your payment.", 
-            color=0x000000
-        )
-        embed.set_image(url="https://cdn.discordapp.com/attachments/1553732228096200746/1559726524683264120/Band_Payment__Tips.png?ex=6ad02005&is=6acece85&hm=30a9dd249941008d94290f21107aad67d1f4e19de20d336537c488d23664ced1") # UPDATE BACKUP LINK
-    else:
-        embed = discord.Embed(
-            title="QRph Payment", 
-            description="Please scan the QRph code below to proceed with your payment. This works for GCash, Maya, and most banking apps.", 
-            color=0x00529B
-        )
-        embed.set_image(url="https://cdn.discordapp.com/attachments/1553732228096200746/1559726575497510912/Band_Payment__Tips_1.png?ex=6ad02011&is=6acece91&hm=50d7563ea0a018cec3bc822eeb98c27ce33b6fe6601c92528f0011a491e15f1b") # UPDATE PRIMARY LINK
-        
-    await ctx.send(embed=embed)
 
 # --- Server Boost Tracker ---
 @bot.event
 async def on_member_update(before, after):
-    # Check if the user's profile updated to include a boost timestamp
     if before.premium_since is None and after.premium_since is not None:
-        gen_chat = bot.get_channel(1557900784413188111)
+        gen_chat = bot.get_channel(GENERAL_CHANNEL_ID)
         if gen_chat:
             embed = discord.Embed(
                 title="🚀 NEW SERVER BOOST! 🚀",
-                description=f"Huge thanks to {after.mention} for boosting the server!\n\nYour support helps us keep the music playing and the doors open. We appreciate you! 🎵🚪",
-                color=0xF47FFF  # Discord Nitro Pink
+                description=(
+                    f"Huge thanks to {after.mention} for boosting the server!\n\n"
+                    f"Your support helps us keep the music playing and the doors open. We appreciate you! 🎵🚪"
+                ),
+                color=0xF47FFF
             )
             embed.set_thumbnail(url=after.display_avatar.url)
             await gen_chat.send(embed=embed)
+
+
+# --- Payment QR Command (Linked to Google Sheets Settings Tab) ---
+@bot.command()
+async def payment(ctx, option: str = "1"):
+    try:
+        gc = gspread.service_account(filename='google_credentials.json')
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        settings_sheet = sh.worksheet("Settings")
+
+        primary_link = settings_sheet.acell('B1').value
+        backup_link = settings_sheet.acell('B2').value
+    except Exception as e:
+        await ctx.send("Error connecting to the Settings tab in Google Sheets. Please make sure the 'Settings' tab exists.")
+        print(f"Sheets Error: {e}")
+        return
+
+    if option == "2":
+        embed = discord.Embed(
+            title="Backup Payment Method",
+            description="Please use this backup QR code to proceed with your payment. Once paid, please send a screenshot of your receipt here!",
+            color=0x000000
+        )
+        embed.set_image(url=backup_link)
+    else:
+        embed = discord.Embed(
+            title="QRph Payment",
+            description="Please scan the QRph code below to proceed with your payment (works for GCash, Maya, and banking apps). Once paid, please send a screenshot of your receipt here!",
+            color=0x00529B
+        )
+        embed.set_image(url=primary_link)
+
+    await ctx.send(embed=embed)
 
 
 # Start the web server and bot
