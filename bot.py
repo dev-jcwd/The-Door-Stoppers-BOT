@@ -45,9 +45,11 @@ GENERAL_CHANNEL_ID = 1557900784413188111
 ADMIN_ROLE_ID = 1557901221669642253
 RECORD_CHANNEL_ID = 1559322818116591666
 TICKET_CATEGORY_ID = 1559324491543351307
+CLOSE_ADMIN_ROLE_ID = 1558077964477014116
 
-# Optional: Paste the "TDS - Members" Role ID here, or leave as 0 and the bot will auto-detect it by name!
-TDS_MEMBERS_ROLE_ID = 0
+# Optional: Paste the "TDS - Members" Role ID here, or leave as 0 to auto-detect by name
+TDS_MEMBERS_ROLE_ID = 1557901221669642253
+ADMIN_ROLE_ID = 1557901221669642253
 
 # --- Merch Product Image URLs ---
 CHASING_SUNSET_IMG = "https://media.discordapp.net/attachments/1557900784413188111/1571843964439629845/IMG_9488.jpg?ex=6afc3544&is=6afae3c4&hm=854aa966dde4e27128e4174319cc7e91f9055fcda24fde828fb1d7428b6d3c18&format=webp"
@@ -57,7 +59,7 @@ TDS_TSHIRT_IMG = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQNzZW-GB
 # --- Google Sheets & Google Drive IDs ---
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
 DRIVE_MAIN_FOLDER_ID = "1FdR9bUPW-uHkgLrCn0zvf-V-0jfhDKEp"
-# Optional: Paste your Google Apps Script Web App URL here, OR put it in Cell B3 of your "Settings" sheet!
+# Optional: Paste your Google Apps Script Web App URL here, OR put it in Cell B3 of your "Settings" sheet
 DRIVE_APPS_SCRIPT_URL = ""
 
 GOOGLE_SCOPES = [
@@ -90,7 +92,7 @@ def build_progress_bar(elapsed, total, length=9):
 
 async def spotify_activity_loop():
     await bot.wait_until_ready()
-    step = 15  # Updates every 15 seconds to stay safe from Discord rate limits
+    step = 15  # Updates every 15 seconds to stay within Discord rate limits
 
     while not bot.is_closed():
         song_title, duration = next(TDS_PLAYLIST)
@@ -112,7 +114,7 @@ async def spotify_activity_loop():
             await asyncio.sleep(step)
 
 
-# --- Helper: Fallback Direct Multipart Upload (Used only if Apps Script URL is not set) ---
+# --- Helper: Fallback Direct Multipart Upload ---
 def upload_file_to_drive_direct(authed_session, folder_id, filename, file_bytes, content_type):
     boundary = "===TDS_DRIVE_UPLOAD_BOUNDARY==="
     metadata_bytes = json.dumps({"name": filename, "parents": [folder_id]}).encode("utf-8")
@@ -134,7 +136,7 @@ def upload_file_to_drive_direct(authed_session, folder_id, filename, file_bytes,
         print(f"Direct Drive File Upload Error ({filename}): {res.text}")
 
 
-# --- Helper: Sync Order to Google Drive & Google Sheets (Runs in Background Thread) ---
+# --- Helper: Sync Order to Google Drive & Google Sheets ---
 def sync_order_to_google(
     ph_time,
     ph_date_short,
@@ -152,7 +154,6 @@ def sync_order_to_google(
 ):
     drive_folder_url = ""
 
-    # Clean text so slashes don't break folder names
     safe_user = re.sub(r'[\\/*?:"<>|]', '-', buyer_discord_name).strip()
     safe_name = re.sub(r'[\\/*?:"<>|]', '-', extracted_name if extracted_name != "N/A" else "No Name").strip()
     safe_item = re.sub(r'[\\/*?:"<>|]', '-', extracted_item).strip()
@@ -171,7 +172,6 @@ def sync_order_to_google(
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
 
-    # Check if the user added the Google Apps Script Web App URL in Settings!B3
     script_url = DRIVE_APPS_SCRIPT_URL.strip()
     if not script_url:
         try:
@@ -182,7 +182,6 @@ def sync_order_to_google(
         except Exception:
             pass
 
-    # Prepare files to save in the buyer's Google Drive folder
     html_shortcut = (
         f"<!DOCTYPE html><html><head>"
         f"<meta http-equiv='refresh' content='0; url={thread_url}' />"
@@ -215,7 +214,7 @@ def sync_order_to_google(
             "rawBytes": att_bytes
         })
 
-    # 1A. UPLOAD VIA GOOGLE APPS SCRIPT BRIDGE (Bypasses Service Account 0-byte quota!)
+    # 1A. UPLOAD VIA GOOGLE APPS SCRIPT BRIDGE
     if script_url:
         try:
             bridge_data = {
@@ -248,7 +247,7 @@ def sync_order_to_google(
         except Exception as e:
             print(f"Error calling Google Apps Script bridge: {e}")
 
-    # 1B. FALLBACK: Direct Drive API (If Apps Script URL is not set yet)
+    # 1B. FALLBACK: Direct Drive API
     if not drive_folder_url and DRIVE_MAIN_FOLDER_ID:
         try:
             folder_metadata = {
@@ -337,11 +336,9 @@ async def update_sticky_message(channel):
         try:
             recent_msgs = [m async for m in channel.history(limit=15)]
 
-            # If the very last message in the channel is already the sticky note, leave it alone
             if recent_msgs and recent_msgs[0].author == bot.user and recent_msgs[0].content.startswith("# RECORDS BACK-UP"):
                 return
 
-            # Delete old sticky notes so there are never duplicates
             for msg in recent_msgs:
                 if msg.author == bot.user and msg.content.startswith("# RECORDS BACK-UP"):
                     try:
@@ -349,7 +346,6 @@ async def update_sticky_message(channel):
                     except Exception:
                         pass
 
-            # Send the new sticky note at the bottom silently (no notifications)
             await channel.send(content=sticky_text, silent=True)
         except Exception as e:
             print(f"Sticky Message Error: {e}")
@@ -380,17 +376,10 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         time_str = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
         transcript += f"[{time_str}] {msg.author.name}: {msg.clean_content}\n"
 
-        # Detect product selected from either message text or embed description
-        if msg.author.bot:
-            search_sources = [msg.clean_content]
-            for emb in msg.embeds:
-                if emb.description:
-                    search_sources.append(emb.description)
-            for src in search_sources:
-                if "You selected: **" in src:
-                    match = re.search(r'You selected: \*\*(.*?)\*\*', src)
-                    if match:
-                        extracted_item = match.group(1)
+        if msg.author.bot and "You selected: **" in msg.clean_content:
+            match = re.search(r'You selected: \*\*(.*?)\*\*', msg.clean_content)
+            if match:
+                extracted_item = match.group(1)
 
         if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
@@ -503,7 +492,6 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         for i in range(0, len(discord_files), chunk_size):
             await thread.send(files=discord_files[i:i+chunk_size])
 
-    # Refresh the sticky note in #ticket-records so it stays below the new thread
     if record_channel:
         await update_sticky_message(record_channel)
 
@@ -519,9 +507,15 @@ class CloseTicketView(discord.ui.View):
     @discord.ui.button(label="🔒 Close & Archive Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_button")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         tds_role = get_tds_members_role(interaction.guild)
-        is_tds_member = tds_role in interaction.user.roles if tds_role else False
+        user_role_ids = [role.id for role in interaction.user.roles]
 
-        if interaction.user.guild_permissions.administrator or is_tds_member:
+        has_allowed_role = (
+            CLOSE_ADMIN_ROLE_ID in user_role_ids
+            or ADMIN_ROLE_ID in user_role_ids
+            or (tds_role and tds_role.id in user_role_ids)
+        )
+
+        if interaction.user.guild_permissions.administrator or has_allowed_role:
             await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=False)
         else:
             await interaction.response.send_message("Only admins or TDS - Members can close this ticket.", ephemeral=True)
@@ -555,50 +549,42 @@ class ConfirmationView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
 
-
 class ProductSelectionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def handle_selection(self, interaction, product, price, image_urls, extra_note=""):
+    async def handle_selection(self, interaction, product, price, image_url=None, thumbnail_url=None, extra_note=""):
         for child in self.children:
             child.disabled = True
 
         note_text = f"\n{extra_note}" if extra_note else ""
-        desc = (
+        # Keeping "You selected: **...**" in content ensures Google Sheets & Drive auto-detect the item name
+        msg = (
             f"You selected: **{product}**\n"
             f"Since you are a Discord member, the price is **Php {price} + shipping fee**.{note_text}\n\n"
             f"Would you like to proceed?"
         )
 
-        # Build product preview embed(s) showing the selected merch image(s)
-        embeds_to_show = []
-        primary_embed = discord.Embed(
-            title=f"🛍️ {product}",
-            description=desc,
-            color=0xFFFF00,
-            url="https://www.submithub.com/link/thedoorstoppers"
+        preview_embed = discord.Embed(
+            title=f"🛒 {product}",
+            description=f"**Discord Member Price:** Php {price} + shipping fee{note_text}",
+            color=0xFFFF00
         )
-        if image_urls:
-            primary_embed.set_image(url=image_urls[0])
-        embeds_to_show.append(primary_embed)
-
-        # If a bundle has 2 images, Discord displays them together as a gallery when sharing the same URL
-        for extra_img in image_urls[1:]:
-            extra_embed = discord.Embed(url="https://www.submithub.com/link/thedoorstoppers")
-            extra_embed.set_image(url=extra_img)
-            embeds_to_show.append(extra_embed)
+        if image_url:
+            preview_embed.set_image(url=image_url)
+        if thumbnail_url:
+            preview_embed.set_thumbnail(url=thumbnail_url)
 
         confirm_view = ConfirmationView()
-        await interaction.response.edit_message(content="", embeds=embeds_to_show, view=confirm_view)
+        await interaction.response.edit_message(content=msg, embed=preview_embed, view=confirm_view)
 
     @discord.ui.button(label="🌅 Chasing Sunset Tee (Pre-Order)", style=discord.ButtonStyle.success, custom_id="sel_chasing_sunset")
     async def select_chasing_sunset(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_selection(
             interaction,
             "Chasing Sunset Tee (Pre-Order)",
-            500,  # Change 500 if the discounted pre-order price is different
-            image_urls=[CHASING_SUNSET_IMG],
+            500,
+            image_url=CHASING_SUNSET_IMG,
             extra_note="🔥 *Includes your **Php 100 OFF** Discord exclusive pre-order discount!*"
         )
 
@@ -608,7 +594,7 @@ class ProductSelectionView(discord.ui.View):
             interaction,
             "T-Shirt Only",
             500,
-            image_urls=[TDS_TSHIRT_IMG]
+            image_url=TDS_TSHIRT_IMG
         )
 
     @discord.ui.button(label="Pillars EP CD Only", style=discord.ButtonStyle.primary, custom_id="sel_cd")
@@ -617,7 +603,7 @@ class ProductSelectionView(discord.ui.View):
             interaction,
             "Pillars EP CD Only",
             300,
-            image_urls=[PILLARS_CD_IMG]
+            image_url=PILLARS_CD_IMG
         )
 
     @discord.ui.button(label="Pillars EP CD & T-Shirt", style=discord.ButtonStyle.primary, custom_id="sel_both")
@@ -626,7 +612,8 @@ class ProductSelectionView(discord.ui.View):
             interaction,
             "Pillars EP CD & T-Shirt",
             800,
-            image_urls=[PILLARS_CD_IMG, TDS_TSHIRT_IMG]
+            image_url=TDS_TSHIRT_IMG,
+            thumbnail_url=PILLARS_CD_IMG
         )
 
 
@@ -647,9 +634,11 @@ class TicketView(discord.ui.View):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         }
 
-        # Give both Admin Role and "TDS - Members" Role access to see and chat in the ticket!
         if admin_role:
             overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+            close_admin_role = guild.get_role(CLOSE_ADMIN_ROLE_ID)
+        if close_admin_role:
+            overwrites[close_admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         if tds_members_role:
             overwrites[tds_members_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
@@ -670,7 +659,6 @@ class TicketView(discord.ui.View):
             color=0xFFFF00
         )
 
-        # Build the role notification ping for both Admin and TDS - Members
         ping_list = [f"<@&{ADMIN_ROLE_ID}>"]
         if tds_members_role and tds_members_role.id != ADMIN_ROLE_ID:
             ping_list.append(tds_members_role.mention)
@@ -697,7 +685,6 @@ async def on_ready():
         bot.spotify_loop_started = True
         bot.loop.create_task(spotify_activity_loop())
 
-    # Ensure the sticky note is posted in #ticket-records on startup
     record_channel = bot.get_channel(RECORD_CHANNEL_ID)
     if record_channel:
         await update_sticky_message(record_channel)
@@ -808,7 +795,6 @@ async def on_message(message):
             view = ConfirmView(message, announce_channel)
             await message.channel.send("Do you want to send this as an official announcement?", view=view)
 
-    # Keep the sticky note at the very bottom if someone chats in #ticket-records
     if message.channel.id == RECORD_CHANNEL_ID:
         await update_sticky_message(message.channel)
 
