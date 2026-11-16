@@ -49,6 +49,11 @@ TICKET_CATEGORY_ID = 1559324491543351307
 # Optional: Paste the "TDS - Members" Role ID here, or leave as 0 and the bot will auto-detect it by name!
 TDS_MEMBERS_ROLE_ID = 0
 
+# --- Merch Product Image URLs ---
+CHASING_SUNSET_IMG = "https://media.discordapp.net/attachments/1557900784413188111/1571843964439629845/IMG_9488.jpg?ex=6afc3544&is=6afae3c4&hm=854aa966dde4e27128e4174319cc7e91f9055fcda24fde828fb1d7428b6d3c18&format=webp"
+PILLARS_CD_IMG = "https://i.scdn.co/image/ab67616d00001e02824b1eee789e616fa731334a"
+TDS_TSHIRT_IMG = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQNzZW-GBBsyhfLJcagd8js2KlHj3C2CNU09f-tBICb4XWIvC9TC1DbjfZ3&s=10"
+
 # --- Google Sheets & Google Drive IDs ---
 GOOGLE_SHEET_ID = "1b3dngW8flOcbT7WASy7iQv_1TsWRFiVhLYY3LTNsNLI"
 DRIVE_MAIN_FOLDER_ID = "1FdR9bUPW-uHkgLrCn0zvf-V-0jfhDKEp"
@@ -375,10 +380,17 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
         time_str = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
         transcript += f"[{time_str}] {msg.author.name}: {msg.clean_content}\n"
 
-        if msg.author.bot and "You selected: **" in msg.clean_content:
-            match = re.search(r'You selected: \*\*(.*?)\*\*', msg.clean_content)
-            if match:
-                extracted_item = match.group(1)
+        # Detect product selected from either message text or embed description
+        if msg.author.bot:
+            search_sources = [msg.clean_content]
+            for emb in msg.embeds:
+                if emb.description:
+                    search_sources.append(emb.description)
+            for src in search_sources:
+                if "You selected: **" in src:
+                    match = re.search(r'You selected: \*\*(.*?)\*\*', src)
+                    if match:
+                        extracted_item = match.group(1)
 
         if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
@@ -548,29 +560,74 @@ class ProductSelectionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def handle_selection(self, interaction, product, price):
+    async def handle_selection(self, interaction, product, price, image_urls, extra_note=""):
         for child in self.children:
             child.disabled = True
 
-        msg = (
+        note_text = f"\n{extra_note}" if extra_note else ""
+        desc = (
             f"You selected: **{product}**\n"
-            f"Since you are a Discord member, the price is **Php {price} + shipping fee**.\n\n"
+            f"Since you are a Discord member, the price is **Php {price} + shipping fee**.{note_text}\n\n"
             f"Would you like to proceed?"
         )
+
+        # Build product preview embed(s) showing the selected merch image(s)
+        embeds_to_show = []
+        primary_embed = discord.Embed(
+            title=f"🛍️ {product}",
+            description=desc,
+            color=0xFFFF00,
+            url="https://www.submithub.com/link/thedoorstoppers"
+        )
+        if image_urls:
+            primary_embed.set_image(url=image_urls[0])
+        embeds_to_show.append(primary_embed)
+
+        # If a bundle has 2 images, Discord displays them together as a gallery when sharing the same URL
+        for extra_img in image_urls[1:]:
+            extra_embed = discord.Embed(url="https://www.submithub.com/link/thedoorstoppers")
+            extra_embed.set_image(url=extra_img)
+            embeds_to_show.append(extra_embed)
+
         confirm_view = ConfirmationView()
-        await interaction.response.edit_message(content=msg, view=confirm_view)
+        await interaction.response.edit_message(content="", embeds=embeds_to_show, view=confirm_view)
+
+    @discord.ui.button(label="🌅 Chasing Sunset Tee (Pre-Order)", style=discord.ButtonStyle.success, custom_id="sel_chasing_sunset")
+    async def select_chasing_sunset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_selection(
+            interaction,
+            "Chasing Sunset Tee (Pre-Order)",
+            500,  # Change 500 if the discounted pre-order price is different
+            image_urls=[CHASING_SUNSET_IMG],
+            extra_note="🔥 *Includes your **Php 100 OFF** Discord exclusive pre-order discount!*"
+        )
 
     @discord.ui.button(label="T-Shirt Only", style=discord.ButtonStyle.primary, custom_id="sel_tshirt")
     async def select_tshirt(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(interaction, "T-Shirt Only", 500)
+        await self.handle_selection(
+            interaction,
+            "T-Shirt Only",
+            500,
+            image_urls=[TDS_TSHIRT_IMG]
+        )
 
     @discord.ui.button(label="Pillars EP CD Only", style=discord.ButtonStyle.primary, custom_id="sel_cd")
     async def select_cd(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(interaction, "Pillars EP CD Only", 300)
+        await self.handle_selection(
+            interaction,
+            "Pillars EP CD Only",
+            300,
+            image_urls=[PILLARS_CD_IMG]
+        )
 
     @discord.ui.button(label="Pillars EP CD & T-Shirt", style=discord.ButtonStyle.primary, custom_id="sel_both")
     async def select_both(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(interaction, "Pillars EP CD & T-Shirt", 800)
+        await self.handle_selection(
+            interaction,
+            "Pillars EP CD & T-Shirt",
+            800,
+            image_urls=[PILLARS_CD_IMG, TDS_TSHIRT_IMG]
+        )
 
 
 class TicketView(discord.ui.View):
@@ -605,7 +662,11 @@ class TicketView(discord.ui.View):
         selection_view = ProductSelectionView()
         embed = discord.Embed(
             title="Merch Order Ticket",
-            description=f"Welcome {interaction.user.mention}!\n\nWhat would you like to buy? Please select an option below:",
+            description=(
+                f"Welcome {interaction.user.mention}!\n\n"
+                f"🌅 **NEW:** Pre-order the **Chasing Sunset Tee** now and get **Php 100 OFF** exclusively on Discord!\n\n"
+                f"What would you like to buy? Please select an option below:"
+            ),
             color=0xFFFF00
         )
 
@@ -652,8 +713,8 @@ async def merchpanel(ctx):
     embed = discord.Embed(
         title="🎸 Grab Your Official The Door Stoppers Merch! 🚪",
         description=(
-            "Our physical **Pillars EP CDs** and official band tees are now available!\n\n"
-            "You can reach out to us on Instagram or TikTok, or simply place your order right here on Discord.\n\n"
+            "🌅 **NEW PRE-ORDER:** The **Chasing Sunset Tee** is now open for pre-order with **Php 100 OFF** exclusively here on Discord!\n\n"
+            "Our physical **Pillars EP CDs** and official band tees are also available.\n\n"
             "Click the **Order Now** button below to open a private ticket with the band and secure your merch!"
         ),
         color=0xFFFF00
