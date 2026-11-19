@@ -49,10 +49,11 @@ CLOSE_ADMIN_ROLE_ID = 1558077964477014116
 
 # Optional: Paste the "TDS - Members" Role ID here, or leave as 0 to auto-detect by name
 TDS_MEMBERS_ROLE_ID = 1557901221669642253
-ADMIN_ROLE_ID = 1557901221669642253
 
 # --- Merch Product Image URLs ---
-CHASING_SUNSET_IMG = "https://media.discordapp.net/attachments/1557900784413188111/1571843964439629845/IMG_9488.jpg?ex=6afc3544&is=6afae3c4&hm=854aa966dde4e27128e4174319cc7e91f9055fcda24fde828fb1d7428b6d3c18&format=webp"
+CHASING_SUNSET_IMG = "https://drive.google.com/u/0/drive-viewer/AKGpihZcpA7KlE787PdD6nWf9kPkC_3LIQNmZb0aYyy5CcXClBlKoHKJCBBMfJWyRqCPpU6HA7pB_cBKVYvzHrPM8LBvkzRr8VWBIvY=s1600-rw-v1?auditContext=forDisplay"
+# Paste a direct image URL for the Chasing Sunsets CD below (e.g., from Postimages or Imgur):
+CHASING_SUNSETS_CD_IMG = "https://drive.google.com/u/0/drive-viewer/AKGpihamW56qYpFmyJqKwJx9ZwZS_Z0xE_i2GAksbMsephoLAAgwn98MJNAo3vIVeLG_Fhk9jWCC-9V66zV37RskZzyCWxiSawQ-_A=s1600-rw-v1?auditContext=forDisplay"
 PILLARS_CD_IMG = "https://i.scdn.co/image/ab67616d00001e02824b1eee789e616fa731334a"
 TDS_TSHIRT_IMG = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQNzZW-GBBsyhfLJcagd8js2KlHj3C2CNU09f-tBICb4XWIvC9TC1DbjfZ3&s=10"
 
@@ -549,6 +550,7 @@ class ConfirmationView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
 
+
 class ProductSelectionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -570,9 +572,9 @@ class ProductSelectionView(discord.ui.View):
             description=f"**Discord Member Price:** Php {price} + shipping fee{note_text}",
             color=0xFFFF00
         )
-        if image_url:
+        if image_url and image_url.startswith("http"):
             preview_embed.set_image(url=image_url)
-        if thumbnail_url:
+        if thumbnail_url and thumbnail_url.startswith("http"):
             preview_embed.set_thumbnail(url=thumbnail_url)
 
         confirm_view = ConfirmationView()
@@ -586,6 +588,16 @@ class ProductSelectionView(discord.ui.View):
             500,
             image_url=CHASING_SUNSET_IMG,
             extra_note="🔥 *Includes your **Php 100 OFF** Discord exclusive pre-order discount!*"
+        )
+
+    @discord.ui.button(label="💿 Chasing Sunsets CD (Pre-Order)", style=discord.ButtonStyle.success, custom_id="sel_chasing_sunsets_cd")
+    async def select_chasing_sunsets_cd(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_selection(
+            interaction,
+            "Chasing Sunsets CD (Pre-Order)",
+            350,
+            image_url=CHASING_SUNSETS_CD_IMG,
+            extra_note="🔥 *Regular price: ~~Php 400~~ — Includes your **Php 50 OFF** Discord exclusive pre-order discount!*"
         )
 
     @discord.ui.button(label="T-Shirt Only", style=discord.ButtonStyle.primary, custom_id="sel_tshirt")
@@ -627,6 +639,7 @@ class TicketView(discord.ui.View):
         category = guild.get_channel(TICKET_CATEGORY_ID)
         tds_members_role = get_tds_members_role(guild)
         admin_role = guild.get_role(ADMIN_ROLE_ID)
+        close_admin_role = guild.get_role(CLOSE_ADMIN_ROLE_ID)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -636,7 +649,6 @@ class TicketView(discord.ui.View):
 
         if admin_role:
             overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-            close_admin_role = guild.get_role(CLOSE_ADMIN_ROLE_ID)
         if close_admin_role:
             overwrites[close_admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
         if tds_members_role:
@@ -653,7 +665,9 @@ class TicketView(discord.ui.View):
             title="Merch Order Ticket",
             description=(
                 f"Welcome {interaction.user.mention}!\n\n"
-                f"🌅 **NEW:** Pre-order the **Chasing Sunset Tee** now and get **Php 100 OFF** exclusively on Discord!\n\n"
+                f"🌅 **PRE-ORDERS OPEN (Discord Exclusive Discounts):**\n"
+                f"• **Chasing Sunset Tee** — **Php 100 OFF**\n"
+                f"• **Chasing Sunsets CD** — **Php 350** *(~~Php 400~~ — Php 50 OFF)*\n\n"
                 f"What would you like to buy? Please select an option below:"
             ),
             color=0xFFFF00
@@ -700,7 +714,9 @@ async def merchpanel(ctx):
     embed = discord.Embed(
         title="🎸 Grab Your Official The Door Stoppers Merch! 🚪",
         description=(
-            "🌅 **NEW PRE-ORDER:** The **Chasing Sunset Tee** is now open for pre-order with **Php 100 OFF** exclusively here on Discord!\n\n"
+            "🌅 **NEW PRE-ORDERS (Discord Exclusive Discounts):**\n"
+            "• **Chasing Sunset Tee** — **Php 100 OFF** exclusively on Discord!\n"
+            "• **Chasing Sunsets Album CD** — **Php 350** *(~~Php 400~~ regular — Php 50 OFF)*!\n\n"
             "Our physical **Pillars EP CDs** and official band tees are also available.\n\n"
             "Click the **Order Now** button below to open a private ticket with the band and secure your merch!"
         ),
@@ -724,29 +740,37 @@ class ConfirmView(discord.ui.View):
             await interaction.response.send_message("Only admins can confirm announcements.", ephemeral=True)
             return
 
+        await interaction.response.defer()
+
         embed = discord.Embed(color=0xFFFF00)
-        embed.set_author(name=self.draft_message.author.display_name, icon_url=self.draft_message.author.display_avatar.url)
+        embed.set_author(
+            name=self.draft_message.author.display_name,
+            icon_url=self.draft_message.author.display_avatar.url
+        )
 
         url_match = None
         if self.draft_message.content:
             url_match = re.search(r'(https?://\S+)', self.draft_message.content)
             embed.description = self.draft_message.content
 
-        file_to_send = None
-        attachment_url = None
+        files_to_send = []
+        image_filenames = []
 
-        if self.draft_message.attachments:
-            attachment = self.draft_message.attachments[0]
-            attachment_url = attachment.url
+        for idx, attachment in enumerate(self.draft_message.attachments):
+            try:
+                file_bytes = await attachment.read()
+                safe_fname = re.sub(r'[^a-zA-Z0-9._-]', '_', attachment.filename)
+                unique_fname = f"{idx + 1}_{safe_fname}"
 
-            if attachment.content_type and attachment.content_type.startswith('image/'):
-                embed.set_image(url=attachment.url)
-            else:
-                try:
-                    file_bytes = await attachment.read()
-                    file_to_send = discord.File(io.BytesIO(file_bytes), filename=attachment.filename)
-                except Exception:
-                    pass
+                files_to_send.append(discord.File(io.BytesIO(file_bytes), filename=unique_fname))
+                if attachment.content_type and attachment.content_type.startswith('image/'):
+                    image_filenames.append(unique_fname)
+            except Exception as e:
+                print(f"Error reading announcement attachment {attachment.filename}: {e}")
+
+        # Single image goes inside the embed; multiple images display as Discord's native photo grid below the embed
+        if len(files_to_send) == 1 and len(image_filenames) == 1:
+            embed.set_image(url=f"attachment://{image_filenames[0]}")
 
         notify_text = f"<@&{NOTIFY_ROLE_ID}>\n**ANNOUNCEMENT!**"
 
@@ -758,20 +782,25 @@ class ConfirmView(discord.ui.View):
             link_view.add_item(discord.ui.Button(label="View Post", style=discord.ButtonStyle.link, url=extracted_url))
             has_buttons = True
 
-        if attachment_url:
-            link_view.add_item(discord.ui.Button(label="Open File", style=discord.ButtonStyle.link, url=attachment_url))
-            has_buttons = True
-
         view_to_pass = link_view if has_buttons else None
 
-        if file_to_send:
-            await self.announce_channel.send(content=notify_text, embed=embed, view=view_to_pass, file=file_to_send)
+        if files_to_send:
+            await self.announce_channel.send(
+                content=notify_text,
+                embed=embed,
+                view=view_to_pass,
+                files=files_to_send[:10]
+            )
         else:
-            await self.announce_channel.send(content=notify_text, embed=embed, view=view_to_pass)
+            await self.announce_channel.send(
+                content=notify_text,
+                embed=embed,
+                view=view_to_pass
+            )
 
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="✅ **Announcement sent!**", view=self)
+        await interaction.edit_original_response(content="✅ **Announcement sent!**", view=self)
 
     @discord.ui.button(label="No, cancel", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
