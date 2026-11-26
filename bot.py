@@ -1056,7 +1056,9 @@ def fetch_spotify(artist_id):
         headers={"Authorization": f"Bearer {token}"},
         timeout=20,
     )
-    r.raise_for_status()
+    if r.status_code != 200:
+        # Show Spotify's own explanation (e.g. "Active premium subscription required for the owner of the app")
+        raise RuntimeError(f"Spotify HTTP {r.status_code}: {r.text[:300]}")
     albums = sorted(r.json().get("items", []), key=lambda a: a.get("release_date", ""), reverse=True)
     return [{
         "id": a["id"],
