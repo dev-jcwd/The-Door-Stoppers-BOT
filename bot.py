@@ -932,7 +932,7 @@ import hashlib
 import html as html_lib
 import xml.etree.ElementTree as ET
 
-NOTIFIER_CHANNEL_ID = 1557984463777177610      # default channel for alerts (per-feed override: add #channel)
+NOTIFIER_CHANNEL_ID = ANNOUNCE_CHANNEL_ID      # default channel for alerts (per-feed override: add #channel)
 NOTIFIER_PING_ROLE_ID = NOTIFY_ROLE_ID         # set to 0 to disable pings
 NOTIFIER_INTERVAL_SECONDS = 300                # how often feeds are checked
 NOTIFIER_SHEET_TAB = "Notifier"                # tab in your Google Sheet that stores feeds + "already seen" posts
@@ -1117,12 +1117,57 @@ def build_feed_url(platform, target):
         return f"{RSSHUB_BASE}/facebook/page/{t}"
     return t
 
+def fetch_tiktok(target):
+    """TikTok has no RSS. Accepts a username/profile link (read directly) or an RSS generator URL."""
+    t = target.strip()
+    if t.startswith("http") and "tiktok.com" not in t:
+        return fetch_rss(t)  # feed URL from rss.app etc.
+    m = re.search(r"@([\w.]+)", t)
+    username = m.group(1) if m else t.lstrip("@")
+
+    errors = []
+    # Method 1: public TikTok profile lookup (tikwm.com, unofficial, free, ~1 request/second)
+    try:
+        import time
+        data = None
+        for attempt in range(2):
+            r = requests.get("https://www.tikwm.com/api/user/posts",
+                             params={"unique_id": username, "count": 10},
+                             headers=HTTP_HEADERS, timeout=25)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") == 0:
+                break
+            if "limit" in str(data.get("msg", "")).lower() and attempt == 0:
+                time.sleep(2)
+                continue
+            raise RuntimeError(data.get("msg") or "unknown error")
+        videos = sorted(data.get("data", {}).get("videos", []), key=lambda v: v.get("create_time", 0), reverse=True)
+        return [{
+            "id": str(v["video_id"]),
+            "title": (v.get("title") or "New TikTok video")[:256],
+            "url": f"https://www.tiktok.com/@{username}/video/{v['video_id']}",
+            "desc": "",
+            "image": v.get("origin_cover") or v.get("cover") or "",
+        } for v in videos]
+    except Exception as e:
+        errors.append(f"tikwm: {e}")
+
+    # Method 2: RSSHub fallback
+    try:
+        return fetch_rss(f"{RSSHUB_BASE}/tiktok/user/@{username}")
+    except Exception as e:
+        errors.append(f"rsshub: {e}")
+    raise RuntimeError("; ".join(errors))
+
 def fetch_items(feed):
     p, t = feed["platform"], feed["target"]
     if p == "spotify":
         return fetch_spotify(_extract_id(t, r"artist/([A-Za-z0-9]+)"))
     if p == "apple":
         return fetch_apple(_extract_id(t, r"/artist/(?:[^/]+/)?(\d+)"))
+    if p == "tiktok":
+        return fetch_tiktok(t)
     if p == "youtube":
         return fetch_rss(f"https://www.youtube.com/feeds/videos.xml?channel_id={t}")
     return fetch_rss(build_feed_url(p, t))
