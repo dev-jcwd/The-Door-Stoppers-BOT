@@ -699,6 +699,10 @@ async def on_ready():
         bot.spotify_loop_started = True
         bot.loop.create_task(spotify_activity_loop())
 
+    if not hasattr(bot, "notifier_loop_started"):
+        bot.notifier_loop_started = True
+        bot.loop.create_task(notifier_loop())
+
     record_channel = bot.get_channel(RECORD_CHANNEL_ID)
     if record_channel:
         await update_sticky_message(record_channel)
@@ -906,6 +910,460 @@ async def payment(ctx, option: str = "1"):
         embed.set_image(url=primary_link)
 
     await ctx.send(embed=embed)
+
+
+# =====================================================================
+# --- Social & Music Release Notifier ---
+# Replaces MonitoRSS (Facebook/Instagram) and NotifyMe (TikTok/YouTube),
+# and adds Spotify + Apple Music release alerts.
+#
+# Manage feeds with (admins only):
+#   !feed list
+#   !feed add youtube   TDS-YT   @thedoorstoppers [#channel]
+#   !feed add tiktok    TDS-TT   thedoorstoppers  [#channel]
+#   !feed add facebook  TDS-FB   <page-id or full RSS url>
+#   !feed add instagram TDS-IG   <username or full RSS url>
+#   !feed add rss       Anything <full RSS/Atom url>
+#   !feed add spotify   TDS-SP   <artist id or open.spotify.com/artist/... url>
+#   !feed add apple     TDS-AM   <artist id or music.apple.com/.../artist/... url>
+#   !feed remove <name>   |   !feed test <name>   |   !feed check
+# =====================================================================
+import hashlib
+import html as html_lib
+import xml.etree.ElementTree as ET
+
+NOTIFIER_CHANNEL_ID = ANNOUNCE_CHANNEL_ID      # default channel for alerts (per-feed override: add #channel)
+NOTIFIER_PING_ROLE_ID = NOTIFY_ROLE_ID         # set to 0 to disable pings
+NOTIFIER_INTERVAL_SECONDS = 300                # how often feeds are checked
+NOTIFIER_SHEET_TAB = "Notifier"                # tab in your Google Sheet that stores feeds + "already seen" posts
+NOTIFIER_LOCAL_FILE = "notifier_state.json"    # local fallback if Sheets is unreachable
+MAX_SEEN_PER_FEED = 40
+MAX_POSTS_PER_CHECK = 5                        # safety cap so a glitchy feed can't flood the channel
+
+# Facebook / Instagram / TikTok have no official RSS. These are built through RSSHub.
+# The public rsshub.app is rate-limited and often blocked for those sites, so for reliability either
+# self-host RSSHub (set RSSHUB_BASE) or paste a full feed URL from rss.app / FetchRSS / PolitePol.
+RSSHUB_BASE = os.getenv("RSSHUB_BASE", "https://rsshub.app").rstrip("/")
+
+# Spotify needs a free API app: https://developer.spotify.com/dashboard -> set these two env vars
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TheDoorStoppersBot/1.0)"}
+
+PLATFORMS = {
+    "youtube":   {"label": "YouTube",     "emoji": "▶️", "color": 0xFF0000},
+    "tiktok":    {"label": "TikTok",      "emoji": "🎵", "color": 0x25F4EE},
+    "facebook":  {"label": "Facebook",    "emoji": "📘", "color": 0x1877F2},
+    "instagram": {"label": "Instagram",   "emoji": "📸", "color": 0xE1306C},
+    "spotify":   {"label": "Spotify",     "emoji": "🟢", "color": 0x1DB954},
+    "apple":     {"label": "Apple Music", "emoji": "🍎", "color": 0xFA243C},
+    "rss":       {"label": "Website",     "emoji": "📰", "color": 0x808080},
+}
+
+# Seeded on the very first run (only if no saved state exists yet). Existing releases are NOT announced.
+DEFAULT_FEEDS = [
+    {"name": "TDS-Spotify", "platform": "spotify", "target": "3X4BLDDmGQ8bdiJbbBPMaJ"},
+    {"name": "TDS-Apple",   "platform": "apple",   "target": "1591640721"},
+]
+
+NOTIFIER_STATE = None  # {"feeds": [...], "seen": {feed_name: [ids]}}
+
+
+# ---------- Parsing helpers ----------
+def _norm_id(raw):
+    raw = (raw or "").strip()
+    return raw if len(raw) <= 60 else hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+def _lname(el):
+    return el.tag.rsplit("}", 1)[-1]
+
+def _clean_html(text):
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", html_lib.unescape(text)).strip()
+
+def parse_feed(xml_bytes):
+    """Parses RSS 2.0 and Atom (incl. YouTube) into a list of dicts, newest first."""
+    root = ET.fromstring(xml_bytes)
+    items = []
+    for e in root.iter():
+        if _lname(e) not in ("item", "entry"):
+            continue
+        title = link = guid = desc = img = ""
+        for c in e.iter():
+            if c is e:
+                continue
+            n = _lname(c)
+            if n == "title" and not title:
+                title = (c.text or "").strip()
+            elif n == "link" and not link:
+                link = c.get("href") or (c.text or "").strip()
+            elif n in ("id", "guid", "videoId") and not guid:
+                guid = (c.text or "").strip()
+            elif n in ("description", "summary", "content", "encoded") and not desc:
+                desc = c.text or ""
+            elif n == "thumbnail" and not img:
+                img = c.get("url", "")
+            elif n == "enclosure" and not img and c.get("type", "").startswith("image"):
+                img = c.get("url", "")
+        if not img:
+            m = re.search(r'<img[^>]+src=["\']([^"\']+)', html_lib.unescape(desc))
+            if m:
+                img = m.group(1)
+        text = _clean_html(desc)
+        items.append({
+            "id": _norm_id(guid or link or title),
+            "title": title or text[:80] or "New post",
+            "url": link,
+            "desc": text[:300],
+            "image": img,
+        })
+    return items
+
+def fetch_rss(url):
+    r = requests.get(url, headers=HTTP_HEADERS, timeout=20)
+    r.raise_for_status()
+    return parse_feed(r.content)
+
+
+# ---------- Per-platform fetchers ----------
+_spotify_token = {"value": None, "expires": 0.0}
+
+def _get_spotify_token():
+    now = datetime.now().timestamp()
+    if _spotify_token["value"] and now < _spotify_token["expires"] - 30:
+        return _spotify_token["value"]
+    if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET):
+        raise RuntimeError("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET env vars are not set")
+    r = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={"grant_type": "client_credentials"},
+        auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
+        timeout=20,
+    )
+    r.raise_for_status()
+    j = r.json()
+    _spotify_token["value"] = j["access_token"]
+    _spotify_token["expires"] = now + int(j.get("expires_in", 3600))
+    return _spotify_token["value"]
+
+def fetch_spotify(artist_id):
+    token = _get_spotify_token()
+    r = requests.get(
+        f"https://api.spotify.com/v1/artists/{artist_id}/albums",
+        params={"include_groups": "album,single", "market": "PH", "limit": 10},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=20,
+    )
+    r.raise_for_status()
+    albums = sorted(r.json().get("items", []), key=lambda a: a.get("release_date", ""), reverse=True)
+    return [{
+        "id": a["id"],
+        "title": f'{a["name"]} ({a.get("album_type", "release").title()})',
+        "url": a.get("external_urls", {}).get("spotify", ""),
+        "desc": f'Released {a.get("release_date", "")}',
+        "image": a["images"][0]["url"] if a.get("images") else "",
+    } for a in albums]
+
+def fetch_apple(artist_id):
+    r = requests.get(
+        "https://itunes.apple.com/lookup",
+        params={"id": artist_id, "entity": "album", "country": "ph", "limit": 25, "sort": "recent"},
+        headers=HTTP_HEADERS,
+        timeout=20,
+    )
+    r.raise_for_status()
+    albums = [x for x in r.json().get("results", []) if x.get("wrapperType") == "collection"]
+    albums.sort(key=lambda a: a.get("releaseDate", ""), reverse=True)
+    return [{
+        "id": str(a["collectionId"]),
+        "title": a.get("collectionName", "New release"),
+        "url": a.get("collectionViewUrl", ""),
+        "desc": f'Released {a.get("releaseDate", "")[:10]}',
+        "image": a.get("artworkUrl100", "").replace("100x100", "600x600"),
+    } for a in albums]
+
+def resolve_youtube_channel_id(text):
+    t = text.strip()
+    if re.fullmatch(r"UC[\w-]{22}", t):
+        return t
+    m = re.search(r"channel/(UC[\w-]{22})", t) or re.search(r"channel_id=(UC[\w-]{22})", t)
+    if m:
+        return m.group(1)
+    url = t if t.startswith("http") else f"https://www.youtube.com/{t if t.startswith('@') else '@' + t}"
+    r = requests.get(url, headers={**HTTP_HEADERS, "Accept-Language": "en-US,en;q=0.9"},
+                     cookies={"CONSENT": "YES+1"}, timeout=20)
+    m = (re.search(r'rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})', r.text)
+         or re.search(r'<meta itemprop="channelId" content="(UC[\w-]{22})"', r.text)
+         or re.search(r'"channelId":"(UC[\w-]{22})"', r.text)
+         or re.search(r'channel_id=(UC[\w-]{22})', r.text))
+    if not m:
+        raise ValueError("Could not find a YouTube channel ID. Paste the channel ID (starts with UC) instead.")
+    return m.group(1)
+
+def _extract_id(text, pattern):
+    m = re.search(pattern, text)
+    return m.group(1) if m else text.strip()
+
+def build_feed_url(platform, target):
+    t = target.strip()
+    if t.startswith("http"):
+        return t
+    if platform == "tiktok":
+        return f"{RSSHUB_BASE}/tiktok/user/@{t.lstrip('@')}"
+    if platform == "instagram":
+        return f"{RSSHUB_BASE}/instagram/user/{t.lstrip('@')}"
+    if platform == "facebook":
+        return f"{RSSHUB_BASE}/facebook/page/{t}"
+    return t
+
+def fetch_items(feed):
+    p, t = feed["platform"], feed["target"]
+    if p == "spotify":
+        return fetch_spotify(_extract_id(t, r"artist/([A-Za-z0-9]+)"))
+    if p == "apple":
+        return fetch_apple(_extract_id(t, r"/artist/(?:[^/]+/)?(\d+)"))
+    if p == "youtube":
+        return fetch_rss(f"https://www.youtube.com/feeds/videos.xml?channel_id={t}")
+    return fetch_rss(build_feed_url(p, t))
+
+
+# ---------- State storage (Google Sheet tab, with local file fallback) ----------
+def _notifier_worksheet():
+    gc = gspread.service_account(filename="google_credentials.json")
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        return sh.worksheet(NOTIFIER_SHEET_TAB)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=NOTIFIER_SHEET_TAB, rows=10, cols=2)
+
+def load_notifier_state():
+    try:
+        raw = _notifier_worksheet().acell("A1").value
+        if raw:
+            return json.loads(raw)
+    except Exception as e:
+        print(f"Notifier: could not read state from Google Sheets ({e}); trying local file")
+    try:
+        with open(NOTIFIER_LOCAL_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        pass
+    return {"feeds": [dict(f) for f in DEFAULT_FEEDS], "seen": {}}
+
+def save_notifier_state_raw(raw):
+    try:
+        with open(NOTIFIER_LOCAL_FILE, "w", encoding="utf-8") as f:
+            f.write(raw)
+    except Exception as e:
+        print(f"Notifier: local save failed: {e}")
+    try:
+        _notifier_worksheet().update_acell("A1", raw)
+    except Exception as e:
+        print(f"Notifier: Google Sheets save failed: {e}")
+
+async def get_notifier_state():
+    global NOTIFIER_STATE
+    if NOTIFIER_STATE is None:
+        NOTIFIER_STATE = await asyncio.to_thread(load_notifier_state)
+        NOTIFIER_STATE.setdefault("feeds", [])
+        NOTIFIER_STATE.setdefault("seen", {})
+    return NOTIFIER_STATE
+
+async def save_notifier_state():
+    raw = json.dumps(NOTIFIER_STATE)
+    await asyncio.to_thread(save_notifier_state_raw, raw)
+
+
+# ---------- Sending alerts ----------
+async def send_notification(feed, item, test=False):
+    channel = bot.get_channel(feed.get("channel_id") or NOTIFIER_CHANNEL_ID)
+    if not channel:
+        print(f"Notifier: channel for feed '{feed['name']}' not found")
+        return False
+
+    meta = PLATFORMS.get(feed["platform"], PLATFORMS["rss"])
+    verb = "released something new" if feed["platform"] in ("spotify", "apple") else "just posted"
+    ping = f"<@&{NOTIFIER_PING_ROLE_ID}> " if NOTIFIER_PING_ROLE_ID else ""
+    headline = f"{ping}{meta['emoji']} **{feed['name']}** {verb} on **{meta['label']}**!"
+    if test:
+        headline = "🧪 *Test notification*\n" + headline
+    allowed = discord.AllowedMentions(roles=True)
+
+    # YouTube: plain link so Discord shows its native playable video preview (like NotifyMe)
+    if feed["platform"] == "youtube" and item["url"]:
+        await channel.send(content=f"{headline}\n{item['url']}", allowed_mentions=allowed)
+        return True
+
+    embed = discord.Embed(
+        title=item["title"][:256],
+        description=item["desc"][:300] or None,
+        color=meta["color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    if item["url"].startswith("http"):
+        embed.url = item["url"]
+    if item["image"].startswith("http"):
+        embed.set_image(url=item["image"])
+    embed.set_footer(text=meta["label"])
+
+    view = None
+    if item["url"].startswith("http"):
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label=f"Open on {meta['label']}", style=discord.ButtonStyle.link, url=item["url"]))
+
+    await channel.send(content=headline, embed=embed, view=view, allowed_mentions=allowed)
+    return True
+
+
+# ---------- Polling ----------
+async def check_all_feeds():
+    state = await get_notifier_state()
+    sent, changed = 0, False
+
+    for feed in list(state["feeds"]):
+        name = feed["name"]
+        try:
+            items = await asyncio.to_thread(fetch_items, feed)
+        except Exception as e:
+            print(f"Notifier: '{name}' fetch failed: {e}")
+            continue
+
+        ids = [i["id"] for i in items]
+        seen = state["seen"].get(name)
+
+        if seen is None:  # first time we see this feed: remember what exists, announce nothing
+            state["seen"][name] = ids[:MAX_SEEN_PER_FEED]
+            changed = True
+            continue
+
+        new_items = [i for i in items if i["id"] not in seen]
+        if not new_items:
+            continue
+
+        for item in reversed(new_items[:MAX_POSTS_PER_CHECK]):  # oldest first
+            try:
+                if await send_notification(feed, item):
+                    sent += 1
+            except Exception as e:
+                print(f"Notifier: send failed for '{name}': {e}")
+
+        state["seen"][name] = (ids + [s for s in seen if s not in ids])[:MAX_SEEN_PER_FEED]
+        changed = True
+
+    if changed:
+        await save_notifier_state()
+    return sent
+
+async def notifier_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await check_all_feeds()
+        except Exception as e:
+            print(f"Notifier loop error: {e}")
+        await asyncio.sleep(NOTIFIER_INTERVAL_SECONDS)
+
+
+# ---------- Admin commands ----------
+@bot.group(name="feed", invoke_without_command=True)
+@commands.has_permissions(administrator=True)
+async def feed_group(ctx):
+    await ctx.send(
+        "**Notifier commands**\n"
+        "`!feed list`\n"
+        "`!feed add <youtube|tiktok|facebook|instagram|spotify|apple|rss> <name> <handle/id/url> [#channel]`\n"
+        "`!feed remove <name>` • `!feed test <name>` • `!feed check`"
+    )
+
+@feed_group.command(name="list")
+@commands.has_permissions(administrator=True)
+async def feed_list(ctx):
+    state = await get_notifier_state()
+    if not state["feeds"]:
+        await ctx.send("No feeds yet. Add one with `!feed add`.")
+        return
+    lines = []
+    for f in state["feeds"]:
+        meta = PLATFORMS.get(f["platform"], PLATFORMS["rss"])
+        dest = f"<#{f['channel_id']}>" if f.get("channel_id") else f"<#{NOTIFIER_CHANNEL_ID}>"
+        lines.append(f"{meta['emoji']} **{f['name']}** — {meta['label']} → {dest}\n`{f['target'][:80]}`")
+    await ctx.send("\n".join(lines))
+
+@feed_group.command(name="add")
+@commands.has_permissions(administrator=True)
+async def feed_add(ctx, platform: str, name: str, target: str, channel: discord.TextChannel = None):
+    platform = {"applemusic": "apple", "yt": "youtube"}.get(platform.lower(), platform.lower())
+    if platform not in PLATFORMS:
+        await ctx.send(f"Platform must be one of: {', '.join(PLATFORMS)}")
+        return
+
+    state = await get_notifier_state()
+    if any(f["name"].lower() == name.lower() for f in state["feeds"]):
+        await ctx.send(f"A feed named `{name}` already exists.")
+        return
+
+    feed = {"name": name, "platform": platform, "target": target.strip()}
+    if channel:
+        feed["channel_id"] = channel.id
+
+    async with ctx.typing():
+        try:
+            if platform == "youtube":
+                feed["target"] = await asyncio.to_thread(resolve_youtube_channel_id, target)
+            items = await asyncio.to_thread(fetch_items, feed)
+        except Exception as e:
+            await ctx.send(f"❌ Couldn't read that feed: `{e}`")
+            return
+
+    state["feeds"].append(feed)
+    state["seen"][feed["name"]] = [i["id"] for i in items][:MAX_SEEN_PER_FEED]
+    await save_notifier_state()
+
+    if items:
+        await ctx.send(f"✅ Added **{name}** ({PLATFORMS[platform]['label']}). Latest item right now: *{items[0]['title'][:100]}*. "
+                       f"Only posts made from now on will be announced.")
+    else:
+        await ctx.send(f"⚠️ Added **{name}**, but the feed returned no items yet. If this is Facebook/Instagram/TikTok, "
+                       f"the RSS source may be blocked — try a feed URL from rss.app or your own RSSHub.")
+
+@feed_group.command(name="remove")
+@commands.has_permissions(administrator=True)
+async def feed_remove(ctx, name: str):
+    state = await get_notifier_state()
+    match = next((f for f in state["feeds"] if f["name"].lower() == name.lower()), None)
+    if not match:
+        await ctx.send(f"No feed named `{name}`.")
+        return
+    state["feeds"].remove(match)
+    state["seen"].pop(match["name"], None)
+    await save_notifier_state()
+    await ctx.send(f"🗑️ Removed **{match['name']}**.")
+
+@feed_group.command(name="test")
+@commands.has_permissions(administrator=True)
+async def feed_test(ctx, name: str):
+    state = await get_notifier_state()
+    match = next((f for f in state["feeds"] if f["name"].lower() == name.lower()), None)
+    if not match:
+        await ctx.send(f"No feed named `{name}`.")
+        return
+    try:
+        items = await asyncio.to_thread(fetch_items, match)
+    except Exception as e:
+        await ctx.send(f"❌ Fetch failed: `{e}`")
+        return
+    if not items:
+        await ctx.send("The feed returned no items.")
+        return
+    await send_notification(match, items[0], test=True)
+    await ctx.send("✅ Test sent.", delete_after=5)
+
+@feed_group.command(name="check")
+@commands.has_permissions(administrator=True)
+async def feed_check(ctx):
+    sent = await check_all_feeds()
+    await ctx.send(f"Checked all feeds. {sent} new notification(s) sent.")
 
 
 # Start the web server and bot
