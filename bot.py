@@ -932,7 +932,7 @@ import hashlib
 import html as html_lib
 import xml.etree.ElementTree as ET
 
-NOTIFIER_CHANNEL_ID = ANNOUNCE_CHANNEL_ID      # default channel for alerts (per-feed override: add #channel)
+NOTIFIER_CHANNEL_ID = 1557984463777177610      # default channel for alerts (per-feed override: add #channel)
 NOTIFIER_PING_ROLE_ID = NOTIFY_ROLE_ID         # set to 0 to disable pings
 NOTIFIER_INTERVAL_SECONDS = 300                # how often feeds are checked
 NOTIFIER_SHEET_TAB = "Notifier"                # tab in your Google Sheet that stores feeds + "already seen" posts
