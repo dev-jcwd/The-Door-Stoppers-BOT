@@ -926,6 +926,7 @@ async def payment(ctx, option: str = "1"):
 #   !feed add rss       Anything <full RSS/Atom url>
 #   !feed add spotify   TDS-SP   <artist id or open.spotify.com/artist/... url>
 #   !feed add apple     TDS-AM   <artist id or music.apple.com/.../artist/... url>
+#   !feed notify <#channel> [name|all]   |   !feed force <name> <#channel>
 #   !feed remove <name>   |   !feed test <name>   |   !feed check
 # =====================================================================
 import hashlib
@@ -967,7 +968,7 @@ DEFAULT_FEEDS = [
     {"name": "TDS-Apple",   "platform": "apple",   "target": "1591640721"},
 ]
 
-NOTIFIER_STATE = None  # {"feeds": [...], "seen": {feed_name: [ids]}}
+NOTIFIER_STATE = None  # {"feeds": [...], "seen": {feed_name: [ids]}, "channel_id": optional int}
 
 
 # ---------- Parsing helpers ----------
@@ -1221,8 +1222,22 @@ async def save_notifier_state():
 
 
 # ---------- Sending alerts ----------
-async def send_notification(feed, item, test=False):
-    channel = bot.get_channel(feed.get("channel_id") or NOTIFIER_CHANNEL_ID)
+async def _resolve_channel(channel_id):
+    channel = bot.get_channel(channel_id)
+    if channel is None and channel_id:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+    return channel
+
+async def send_notification(feed, item, test=False, channel_override=None):
+    if channel_override is not None:
+        channel = channel_override
+    else:
+        state = await get_notifier_state()
+        default_channel_id = state.get("channel_id") or NOTIFIER_CHANNEL_ID
+        channel = await _resolve_channel(feed.get("channel_id") or default_channel_id)
     if not channel:
         print(f"Notifier: channel for feed '{feed['name']}' not found")
         return False
@@ -1318,6 +1333,8 @@ async def feed_group(ctx):
         "**Notifier commands**\n"
         "`!feed list`\n"
         "`!feed add <youtube|tiktok|facebook|instagram|spotify|apple|rss> <name> <handle/id/url> [#channel]`\n"
+        "`!feed notify <#channel> [name|all]` — change where notifications are sent\n"
+        "`!feed force <name> <#channel>` — force-send a test notification to another channel\n"
         "`!feed remove <name>` • `!feed test <name>` • `!feed check`"
     )
 
@@ -1325,13 +1342,15 @@ async def feed_group(ctx):
 @commands.has_permissions(administrator=True)
 async def feed_list(ctx):
     state = await get_notifier_state()
+    default_channel_id = state.get("channel_id") or NOTIFIER_CHANNEL_ID
+    header = f"**Default notification channel:** <#{default_channel_id}>"
     if not state["feeds"]:
-        await ctx.send("No feeds yet. Add one with `!feed add`.")
+        await ctx.send(f"{header}\nNo feeds yet. Add one with `!feed add`.")
         return
-    lines = []
+    lines = [header]
     for f in state["feeds"]:
         meta = PLATFORMS.get(f["platform"], PLATFORMS["rss"])
-        dest = f"<#{f['channel_id']}>" if f.get("channel_id") else f"<#{NOTIFIER_CHANNEL_ID}>"
+        dest = f"<#{f['channel_id']}>" if f.get("channel_id") else f"<#{default_channel_id}>"
         lines.append(f"{meta['emoji']} **{f['name']}** — {meta['label']} → {dest}\n`{f['target'][:80]}`")
     await ctx.send("\n".join(lines))
 
@@ -1403,6 +1422,95 @@ async def feed_test(ctx, name: str):
         return
     await send_notification(match, items[0], test=True)
     await ctx.send("✅ Test sent.", delete_after=5)
+
+@feed_group.command(name="notify")
+@commands.has_permissions(administrator=True)
+async def feed_notify(ctx, channel: discord.TextChannel = None, name: str = None):
+    state = await get_notifier_state()
+
+    if channel is None:
+        current_id = state.get("channel_id") or NOTIFIER_CHANNEL_ID
+        await ctx.send(
+            f"Current default notification channel: <#{current_id}>\n"
+            f"Usage: `!feed notify <#channel>` (or `!feed notify <#channel> <feed_name>` / `!feed notify <#channel> all`)"
+        )
+        return
+
+    if name and name.lower() != "all":
+        match = next((f for f in state["feeds"] if f["name"].lower() == name.lower()), None)
+        if not match:
+            await ctx.send(f"No feed named `{name}`.")
+            return
+        match["channel_id"] = channel.id
+        await save_notifier_state()
+        await ctx.send(f"✅ Notifications for **{match['name']}** will now be sent to {channel.mention}.")
+        return
+
+    state["channel_id"] = channel.id
+    if name and name.lower() == "all":
+        for f in state["feeds"]:
+            f.pop("channel_id", None)
+        await save_notifier_state()
+        await ctx.send(f"✅ Moved **all** feed notifications (and the default channel) to {channel.mention}.")
+        return
+
+    await save_notifier_state()
+    custom_feeds = [f["name"] for f in state["feeds"] if f.get("channel_id")]
+    msg = f"✅ Default notification channel changed to {channel.mention}."
+    if custom_feeds:
+        msg += (
+            f"\nℹ️ Note: these feeds still have custom channels set: {', '.join(f'`{n}`' for n in custom_feeds)}. "
+            f"Run `!feed notify {channel.mention} all` to move them too."
+        )
+    await ctx.send(msg)
+
+@feed_notify.error
+async def feed_notify_error(ctx, error):
+    if isinstance(error, commands.ChannelNotFound):
+        await ctx.send("❌ Channel not found. Please mention a valid text channel (e.g., `!feed notify #announcements`).")
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Only administrators can change the notification channel.")
+    else:
+        await ctx.send(f"❌ Error: `{error}`")
+
+@feed_group.command(name="force")
+@commands.has_permissions(administrator=True)
+async def feed_force(ctx, name: str, channel: discord.TextChannel, mode: str = "test"):
+    state = await get_notifier_state()
+    match = next((f for f in state["feeds"] if f["name"].lower() == name.lower()), None)
+    if not match:
+        await ctx.send(f"No feed named `{name}`.")
+        return
+
+    async with ctx.typing():
+        try:
+            items = await asyncio.to_thread(fetch_items, match)
+        except Exception as e:
+            await ctx.send(f"❌ Fetch failed: `{e}`")
+            return
+
+    if not items:
+        await ctx.send("The feed returned no items.")
+        return
+
+    is_test = mode.lower() != "live"
+    sent = await send_notification(match, items[0], test=is_test, channel_override=channel)
+    if sent:
+        label = "test notification" if is_test else "live notification"
+        await ctx.send(f"✅ Forced {label} for **{match['name']}** sent to {channel.mention}.", delete_after=5)
+    else:
+        await ctx.send(f"❌ Failed to send notification to {channel.mention}.")
+
+@feed_force.error
+async def feed_force_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Usage: `!feed force <name> <#channel>` (add `live` at the end to hide the test label).")
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send("❌ Channel not found. Please mention a valid text channel (e.g., `!feed force TDS-Spotify #bot-test`).")
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Only administrators can force-send feed notifications.")
+    else:
+        await ctx.send(f"❌ Error: `{error}`")
 
 @feed_group.command(name="check")
 @commands.has_permissions(administrator=True)
