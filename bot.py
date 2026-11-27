@@ -382,6 +382,11 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
             if match:
                 extracted_item = match.group(1)
 
+        if msg.author.bot:
+            for emb in msg.embeds:
+                if emb.footer and emb.footer.text and emb.footer.text.startswith(ORDER_MARKER):
+                    extracted_item = emb.footer.text[len(ORDER_MARKER):].strip() or extracted_item
+
         if not msg.author.bot:
             for line in msg.clean_content.split('\n'):
                 line_lower = line.strip().lower()
@@ -500,200 +505,496 @@ async def archive_and_close_ticket(interaction, channel, user_cancelled=False):
     await channel.delete()
 
 
-# --- Merch Ticketing System Classes ---
-class CloseTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+# =====================================================================
+# --- Config store (Google Sheet tab "BotConfig") ---
+# Everything edited on the web dashboard (merch panel, auto replies,
+# stickies) is saved here so it survives restarts and redeploys.
+# =====================================================================
+import copy
+import sys
+import time
 
-    @discord.ui.button(label="🔒 Close & Archive Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket_button")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        tds_role = get_tds_members_role(interaction.guild)
-        user_role_ids = [role.id for role in interaction.user.roles]
+CONFIG_TAB = "BotConfig"
+CONFIG_LOCAL_FILE = "bot_config.json"
+CONFIG_CHUNK = 45000          # Google Sheets cells hold max 50,000 characters
+CONFIG_MAX_CHUNKS = 12
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+ORDER_MARKER = "Order item: "  # hidden-in-plain-sight footer used to detect the chosen item when archiving
+STICKY_MARK_TEXT = "-# 📌 Sticky"
+STICKY_MARK_EMBED = "📌 Sticky"
+STICKY_DELAY_SECONDS = 2.5
 
-        has_allowed_role = (
-            CLOSE_ADMIN_ROLE_ID in user_role_ids
-            or ADMIN_ROLE_ID in user_role_ids
-            or (tds_role and tds_role.id in user_role_ids)
-        )
+try:
+    ASSET_CHANNEL_ID = int(os.getenv("ASSET_CHANNEL_ID", "0") or 0)  # private channel used to host images uploaded on the dashboard
+except ValueError:
+    ASSET_CHANNEL_ID = 0
 
-        if interaction.user.guild_permissions.administrator or has_allowed_role:
-            await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=False)
-        else:
-            await interaction.response.send_message("Only admins or TDS - Members can close this ticket.", ephemeral=True)
-
-
-class ConfirmationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Yes, Proceed", style=discord.ButtonStyle.green, custom_id="proceed_yes")
-    async def proceed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        form_text = (
-            "**Awesome! Please fill out the form below by copying and pasting it into your chat:**\n\n"
-            "Name:\n"
-            "Email:\n"
-            "Contact Number:\n"
-            "Complete Delivery Address:\n"
-            "Preferred courier: Lalamove/J&T/LBC\n"
-            "Mode of Payment: GCash/Maya\n\n"
-            "📸 *Once an admin sends the payment QR, please upload a **screenshot of your payment receipt** directly in this chat so we can verify and archive your order!*"
-        )
-
-        close_view = CloseTicketView()
-        await interaction.channel.send(form_text, view=close_view)
-
-    @discord.ui.button(label="No, Cancel", style=discord.ButtonStyle.red, custom_id="proceed_no")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
-
-
-class ProductSelectionView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def handle_selection(self, interaction, product, price, image_url=None, thumbnail_url=None, extra_note=""):
-        for child in self.children:
-            child.disabled = True
-
-        note_text = f"\n{extra_note}" if extra_note else ""
-        # Keeping "You selected: **...**" in content ensures Google Sheets & Drive auto-detect the item name
-        msg = (
-            f"You selected: **{product}**\n"
-            f"Since you are a Discord member, the price is **Php {price} + shipping fee**.{note_text}\n\n"
-            f"Would you like to proceed?"
-        )
-
-        preview_embed = discord.Embed(
-            title=f"🛒 {product}",
-            description=f"**Discord Member Price:** Php {price} + shipping fee{note_text}",
-            color=0xFFFF00
-        )
-        if image_url and image_url.startswith("http"):
-            preview_embed.set_image(url=image_url)
-        if thumbnail_url and thumbnail_url.startswith("http"):
-            preview_embed.set_thumbnail(url=thumbnail_url)
-
-        confirm_view = ConfirmationView()
-        await interaction.response.edit_message(content=msg, embed=preview_embed, view=confirm_view)
-
-    @discord.ui.button(label="🌅 Chasing Sunset Tee (Pre-Order)", style=discord.ButtonStyle.success, custom_id="sel_chasing_sunset")
-    async def select_chasing_sunset(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(
-            interaction,
-            "Chasing Sunset Tee (Pre-Order)",
-            500,
-            image_url=CHASING_SUNSET_IMG,
-            extra_note="🔥 *Includes your **Php 100 OFF** Discord exclusive pre-order discount!*"
-        )
-
-    @discord.ui.button(label="💿 Chasing Sunsets CD (Pre-Order)", style=discord.ButtonStyle.success, custom_id="sel_chasing_sunsets_cd")
-    async def select_chasing_sunsets_cd(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(
-            interaction,
-            "Chasing Sunsets CD (Pre-Order)",
-            350,
-            image_url=CHASING_SUNSETS_CD_IMG,
-            extra_note="🔥 *Regular price: ~~Php 400~~ — Includes your **Php 50 OFF** Discord exclusive pre-order discount!*"
-        )
-
-    @discord.ui.button(label="T-Shirt Only", style=discord.ButtonStyle.primary, custom_id="sel_tshirt")
-    async def select_tshirt(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(
-            interaction,
-            "T-Shirt Only",
-            500,
-            image_url=TDS_TSHIRT_IMG
-        )
-
-    @discord.ui.button(label="Pillars EP CD Only", style=discord.ButtonStyle.primary, custom_id="sel_cd")
-    async def select_cd(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(
-            interaction,
-            "Pillars EP CD Only",
-            300,
-            image_url=PILLARS_CD_IMG
-        )
-
-    @discord.ui.button(label="Pillars EP CD & T-Shirt", style=discord.ButtonStyle.primary, custom_id="sel_both")
-    async def select_both(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_selection(
-            interaction,
-            "Pillars EP CD & T-Shirt",
-            800,
-            image_url=TDS_TSHIRT_IMG,
-            thumbnail_url=PILLARS_CD_IMG
-        )
-
-
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🛒 Order Now", style=discord.ButtonStyle.blurple, custom_id="open_ticket_button")
-    async def order(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        tds_members_role = get_tds_members_role(guild)
-        admin_role = guild.get_role(ADMIN_ROLE_ID)
-        close_admin_role = guild.get_role(CLOSE_ADMIN_ROLE_ID)
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-        }
-
-        if admin_role:
-            overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-        if close_admin_role:
-            overwrites[close_admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-        if tds_members_role:
-            overwrites[tds_members_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-
-        ticket_channel = await guild.create_text_channel(
-            name=f"order-{interaction.user.name}",
-            category=category,
-            overwrites=overwrites
-        )
-
-        selection_view = ProductSelectionView()
-        embed = discord.Embed(
-            title="Merch Order Ticket",
-            description=(
-                f"Welcome {interaction.user.mention}!\n\n"
-                f"🌅 **PRE-ORDERS OPEN (Discord Exclusive Discounts):**\n"
-                f"• **Chasing Sunset Tee** — **Php 100 OFF**\n"
-                f"• **Chasing Sunsets CD** — **Php 350** *(~~Php 400~~ — Php 50 OFF)*\n\n"
-                f"What would you like to buy? Please select an option below:"
+DEFAULT_CONFIG = {
+    "merch": {
+        "panel": {
+            "title": "🎸 Grab Your Official The Door Stoppers Merch! 🚪",
+            "description": (
+                "🌅 **NEW PRE-ORDERS (Discord Exclusive Discounts):**\n"
+                "• **Chasing Sunset Tee** — **Php 100 OFF** exclusively on Discord!\n"
+                "• **Chasing Sunsets Album CD** — **Php 350** *(~~Php 400~~ regular — Php 50 OFF)*!\n\n"
+                "Our physical **Pillars EP CDs** and official band tees are also available.\n\n"
+                "Click the **Order Now** button below to open a private ticket with the band and secure your merch!"
             ),
-            color=0xFFFF00
-        )
+            "color": "#FFFF00", "image": "", "thumbnail": "", "footer": "",
+            "button_label": "🛒 Order Now", "button_style": "primary",
+        },
+        "panel_message": {"channel_id": 0, "message_id": 0},
+        "ticket": {
+            "title": "Merch Order Ticket",
+            "description": (
+                "Welcome {user}!\n\n"
+                "🌅 **PRE-ORDERS OPEN (Discord Exclusive Discounts):**\n"
+                "• **Chasing Sunset Tee** — **Php 100 OFF**\n"
+                "• **Chasing Sunsets CD** — **Php 350** *(~~Php 400~~ — Php 50 OFF)*\n\n"
+                "What would you like to buy? Please select an option below:"
+            ),
+            "color": "#FFFF00", "image": "", "thumbnail": "",
+        },
+        "products": [
+            {"id": "chasing_sunset", "legacy_id": "sel_chasing_sunset", "label": "🌅 Chasing Sunset Tee (Pre-Order)", "style": "success",
+             "name": "Chasing Sunset Tee (Pre-Order)", "price": "500", "image": CHASING_SUNSET_IMG, "thumbnail": "",
+             "note": "🔥 *Includes your **Php 100 OFF** Discord exclusive pre-order discount!*"},
+            {"id": "chasing_sunsets_cd", "legacy_id": "sel_chasing_sunsets_cd", "label": "💿 Chasing Sunsets CD (Pre-Order)", "style": "success",
+             "name": "Chasing Sunsets CD (Pre-Order)", "price": "350", "image": CHASING_SUNSETS_CD_IMG, "thumbnail": "",
+             "note": "🔥 *Regular price: ~~Php 400~~ — Includes your **Php 50 OFF** Discord exclusive pre-order discount!*"},
+            {"id": "tshirt", "legacy_id": "sel_tshirt", "label": "T-Shirt Only", "style": "primary",
+             "name": "T-Shirt Only", "price": "500", "image": TDS_TSHIRT_IMG, "thumbnail": "", "note": ""},
+            {"id": "pillars_cd", "legacy_id": "sel_cd", "label": "Pillars EP CD Only", "style": "primary",
+             "name": "Pillars EP CD Only", "price": "300", "image": PILLARS_CD_IMG, "thumbnail": "", "note": ""},
+            {"id": "both", "legacy_id": "sel_both", "label": "Pillars EP CD & T-Shirt", "style": "primary",
+             "name": "Pillars EP CD & T-Shirt", "price": "800", "image": TDS_TSHIRT_IMG, "thumbnail": PILLARS_CD_IMG, "note": ""},
+        ],
+        "reply": {
+            "message": ("You selected: **{product}**\n"
+                        "Since you are a Discord member, the price is **Php {price} + shipping fee**.{note}\n\n"
+                        "Would you like to proceed?"),
+            "embed_title": "🛒 {product}",
+            "embed_description": "**Discord Member Price:** Php {price} + shipping fee{note}",
+            "color": "#FFFF00",
+            "yes_label": "Yes, Proceed", "no_label": "No, Cancel",
+        },
+        "form": {
+            "text": (
+                "**Awesome! Please fill out the form below by copying and pasting it into your chat:**\n\n"
+                "Name:\nEmail:\nContact Number:\nComplete Delivery Address:\n"
+                "Preferred courier: Lalamove/J&T/LBC\nMode of Payment: GCash/Maya\n\n"
+                "📸 *Once an admin sends the payment QR, please upload a **screenshot of your payment receipt** "
+                "directly in this chat so we can verify and archive your order!*"
+            ),
+        },
+        # when: ticket_open | after_select | after_proceed | after_receipt
+        "close": {"when": "after_proceed", "label": "🔒 Close & Archive Ticket",
+                  "message": "Staff: press the button below once this order is complete."},
+    },
+    "stickies": [],
+}
 
-        ping_list = [f"<@&{ADMIN_ROLE_ID}>"]
-        if tds_members_role and tds_members_role.id != ADMIN_ROLE_ID:
-            ping_list.append(tds_members_role.mention)
+BOT_CONFIG = None
 
-        ping_text = f"🔔 {' '.join(ping_list)} — **New Merch Order Ticket opened by {interaction.user.mention}!**"
 
-        await ticket_channel.send(
-            content=ping_text,
-            embed=embed,
-            view=selection_view,
-            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
-        )
-        await interaction.response.send_message(f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
+def _merge_defaults(base, loaded):
+    for k, v in loaded.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _merge_defaults(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+def _config_ws():
+    gc = gspread.service_account(filename="google_credentials.json")
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    try:
+        return sh.worksheet(CONFIG_TAB)
+    except gspread.WorksheetNotFound:
+        return sh.add_worksheet(title=CONFIG_TAB, rows=5, cols=CONFIG_MAX_CHUNKS + 1)
+
+def load_config_sync():
+    try:
+        row = _config_ws().row_values(1)
+        if row and row[0] == "config":
+            raw = "".join(row[1:])
+            if raw:
+                return json.loads(raw)
+    except Exception as e:
+        print(f"Config: could not read from Google Sheets ({e}); trying local file")
+    try:
+        with open(CONFIG_LOCAL_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_config_sync(raw):
+    try:
+        with open(CONFIG_LOCAL_FILE, "w", encoding="utf-8") as f:
+            f.write(raw)
+    except Exception as e:
+        print(f"Config: local save failed: {e}")
+    chunks = [raw[i:i + CONFIG_CHUNK] for i in range(0, len(raw), CONFIG_CHUNK)]
+    if len(chunks) > CONFIG_MAX_CHUNKS:
+        raise ValueError("Config is too large to store in Google Sheets.")
+    row = ["config"] + chunks + [""] * (CONFIG_MAX_CHUNKS - len(chunks))
+    _config_ws().update(range_name="A1", values=[row])
+
+async def get_config():
+    global BOT_CONFIG
+    if BOT_CONFIG is None:
+        loaded = await asyncio.to_thread(load_config_sync)
+        BOT_CONFIG = _merge_defaults(copy.deepcopy(DEFAULT_CONFIG), loaded or {})
+    return BOT_CONFIG
+
+async def save_config():
+    raw = json.dumps(BOT_CONFIG)
+    await asyncio.to_thread(save_config_sync, raw)
+
+
+# =====================================================================
+# --- Merch panel & ticket flow (fully driven by the config above) ---
+# Buttons are handled in on_interaction, so edits apply instantly and
+# older panel messages keep working (legacy button IDs are mapped).
+# =====================================================================
+STYLE_MAP = {
+    "primary": discord.ButtonStyle.primary,
+    "success": discord.ButtonStyle.success,
+    "danger": discord.ButtonStyle.danger,
+    "secondary": discord.ButtonStyle.secondary,
+}
+LEGACY_BUTTON_IDS = {
+    "open_ticket_button": "tds:order",
+    "proceed_yes": "tds:yes",
+    "proceed_no": "tds:no",
+    "close_ticket_button": "tds:close",
+}
+CLOSE_POSTED = set()
+_asset_cache = {}
+
+
+def parse_color(value, default=0xFFFF00):
+    if isinstance(value, int):
+        return value
+    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(value or "").strip())
+    return int(m.group(1), 16) if m else default
+
+def render_tpl(text, **kw):
+    out = text or ""
+    for k, v in kw.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+async def resolve_image(ref):
+    """Image fields hold either a normal URL or an 'asset:<channel>:<message>:<n>' reference to an uploaded file."""
+    ref = (ref or "").strip()
+    if not ref.startswith("asset:"):
+        return ref if ref.startswith("http") else ""
+    cached = _asset_cache.get(ref)
+    if cached and time.time() - cached[1] < 1200:
+        return cached[0]
+    try:
+        _, cid, mid, idx = ref.split(":")
+        ch = await _resolve_channel(int(cid))
+        msg = await ch.fetch_message(int(mid))
+        url = msg.attachments[int(idx)].url
+        _asset_cache[ref] = (url, time.time())
+        return url
+    except Exception as e:
+        print(f"Asset resolve failed for {ref}: {e}")
+        return ""
+
+async def build_embed(title, description, color, image="", thumbnail="", footer=""):
+    title = (title or "").strip()[:256]
+    description = (description or "").strip()[:4000]
+    img = await resolve_image(image)
+    thumb = await resolve_image(thumbnail)
+    if not title and not description and not img:
+        description = "​"
+    e = discord.Embed(title=title or None, description=description or None, color=parse_color(color))
+    if img:
+        e.set_image(url=img)
+    if thumb:
+        e.set_thumbnail(url=thumb)
+    if footer:
+        e.set_footer(text=footer[:2000])
+    return e
+
+def _button(label, custom_id, style="primary", disabled=False):
+    return discord.ui.Button(label=(label or "Button")[:80], custom_id=custom_id,
+                             style=STYLE_MAP.get(style, discord.ButtonStyle.primary), disabled=disabled)
+
+def _view(*buttons):
+    v = discord.ui.View(timeout=None)
+    for b in buttons:
+        v.add_item(b)
+    return v
+
+def build_panel_view(cfg):
+    p = cfg["merch"]["panel"]
+    return _view(_button(p.get("button_label"), "tds:order", p.get("button_style", "primary")))
+
+def build_product_view(cfg):
+    return _view(*[_button(p.get("label") or p.get("name"), f"tds:sel:{p['id']}", p.get("style", "primary"))
+                   for p in cfg["merch"]["products"][:25]])
+
+def build_confirm_view(cfg, disabled=False):
+    r = cfg["merch"]["reply"]
+    return _view(_button(r.get("yes_label", "Yes, Proceed"), "tds:yes", "success", disabled),
+                 _button(r.get("no_label", "No, Cancel"), "tds:no", "danger", disabled))
+
+def build_close_view(cfg):
+    return _view(_button(cfg["merch"]["close"].get("label", "🔒 Close & Archive Ticket"), "tds:close", "danger"))
+
+async def build_panel_embed(cfg):
+    p = cfg["merch"]["panel"]
+    return await build_embed(p["title"], p["description"], p["color"], p.get("image"), p.get("thumbnail"), p.get("footer"))
+
+async def post_panel(channel):
+    cfg = await get_config()
+    msg = await channel.send(embed=await build_panel_embed(cfg), view=build_panel_view(cfg))
+    cfg["merch"]["panel_message"] = {"channel_id": channel.id, "message_id": msg.id}
+    await save_config()
+    return msg
+
+async def update_panel_message():
+    cfg = await get_config()
+    pm = cfg["merch"].get("panel_message") or {}
+    if not pm.get("message_id"):
+        return False, "No panel is being tracked yet. Publish a new one or link an existing panel message."
+    ch = await _resolve_channel(int(pm["channel_id"]))
+    if not ch:
+        return False, "Couldn't find the channel of the tracked panel."
+    try:
+        msg = await ch.fetch_message(int(pm["message_id"]))
+        await msg.edit(embed=await build_panel_embed(cfg), view=build_panel_view(cfg))
+    except Exception as e:
+        return False, f"Couldn't update the panel message: {e}"
+    return True, "Panel updated in Discord."
+
+def find_product(cfg, pid):
+    return next((p for p in cfg["merch"]["products"] if p["id"] == pid), None)
+
+async def _reply_ephemeral(interaction, text):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+    except Exception as e:
+        print(f"Interaction reply failed: {e}")
+
+async def _has_close_button(channel):
+    async for m in channel.history(limit=40):
+        if m.author.id == bot.user.id:
+            for row in m.components:
+                for child in getattr(row, "children", []):
+                    if getattr(child, "custom_id", None) in ("tds:close", "close_ticket_button"):
+                        return True
+    return False
+
+async def post_close_button(channel, cfg):
+    if channel.id in CLOSE_POSTED:
+        return
+    CLOSE_POSTED.add(channel.id)
+    try:
+        if await _has_close_button(channel):
+            return
+        await channel.send(cfg["merch"]["close"].get("message") or "​", view=build_close_view(cfg))
+    except Exception as e:
+        CLOSE_POSTED.discard(channel.id)
+        print(f"Close button post failed: {e}")
+
+
+async def handle_order(interaction):
+    cfg = await get_config()
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    category = guild.get_channel(TICKET_CATEGORY_ID)
+    tds_members_role = get_tds_members_role(guild)
+    admin_role = guild.get_role(ADMIN_ROLE_ID)
+    close_admin_role = guild.get_role(CLOSE_ADMIN_ROLE_ID)
+
+    perms = dict(read_messages=True, send_messages=True, attach_files=True)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        interaction.user: discord.PermissionOverwrite(**perms),
+        guild.me: discord.PermissionOverwrite(**perms),
+    }
+    for role in (admin_role, close_admin_role, tds_members_role):
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(**perms)
+
+    ticket_channel = await guild.create_text_channel(
+        name=f"order-{interaction.user.name}", category=category, overwrites=overwrites)
+
+    t = cfg["merch"]["ticket"]
+    embed = await build_embed(t["title"], render_tpl(t["description"], user=interaction.user.mention),
+                              t["color"], t.get("image"), t.get("thumbnail"))
+    ping_list = [f"<@&{ADMIN_ROLE_ID}>"]
+    if tds_members_role and tds_members_role.id != ADMIN_ROLE_ID:
+        ping_list.append(tds_members_role.mention)
+    ping_text = f"🔔 {' '.join(ping_list)} — **New Merch Order Ticket opened by {interaction.user.mention}!**"
+
+    await ticket_channel.send(content=ping_text, embed=embed, view=build_product_view(cfg),
+                              allowed_mentions=discord.AllowedMentions(roles=True, users=True))
+    await interaction.followup.send(f"Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
+    if cfg["merch"]["close"].get("when") == "ticket_open":
+        await post_close_button(ticket_channel, cfg)
+
+async def handle_select(interaction, pid):
+    cfg = await get_config()
+    p = find_product(cfg, pid)
+    if not p:
+        await _reply_ephemeral(interaction, "That item isn't available anymore. Please pick another one.")
+        return
+    r = cfg["merch"]["reply"]
+    note = f"\n{p['note']}" if p.get("note") else ""
+    v = dict(product=p["name"], price=p["price"], note=note, user=interaction.user.mention)
+    embed = await build_embed(render_tpl(r["embed_title"], **v), render_tpl(r["embed_description"], **v),
+                              r["color"], p.get("image"), p.get("thumbnail"), footer=f"{ORDER_MARKER}{p['name']}")
+    await interaction.response.edit_message(content=render_tpl(r["message"], **v)[:2000], embed=embed,
+                                            view=build_confirm_view(cfg))
+    if cfg["merch"]["close"].get("when") == "after_select":
+        await post_close_button(interaction.channel, cfg)
+
+async def handle_yes(interaction):
+    cfg = await get_config()
+    await interaction.response.edit_message(view=build_confirm_view(cfg, disabled=True))
+    close = cfg["merch"]["close"]
+    view = build_close_view(cfg) if close.get("when", "after_proceed") == "after_proceed" else None
+    if view:
+        CLOSE_POSTED.add(interaction.channel.id)
+    await interaction.channel.send(cfg["merch"]["form"]["text"][:2000], view=view)
+
+async def handle_close(interaction):
+    tds_role = get_tds_members_role(interaction.guild)
+    user_role_ids = [role.id for role in interaction.user.roles]
+    allowed = (
+        CLOSE_ADMIN_ROLE_ID in user_role_ids or ADMIN_ROLE_ID in user_role_ids
+        or (tds_role and tds_role.id in user_role_ids)
+        or interaction.user.guild_permissions.administrator
+    )
+    if allowed:
+        await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=False)
+    else:
+        await _reply_ephemeral(interaction, "Only admins or TDS - Members can close this ticket.")
+
+@bot.event
+async def on_interaction(interaction):
+    if interaction.type != discord.InteractionType.component:
+        return
+    original = (interaction.data or {}).get("custom_id", "")
+    cid = LEGACY_BUTTON_IDS.get(original, original)
+    try:
+        cfg = await get_config()
+        if original.startswith("sel_"):  # buttons from panels posted before the dashboard existed
+            match = next((p for p in cfg["merch"]["products"] if p.get("legacy_id") == original), None)
+            cid = f"tds:sel:{match['id']}" if match else ""
+        if not cid.startswith("tds:"):
+            return
+        if cid == "tds:order":
+            await handle_order(interaction)
+        elif cid.startswith("tds:sel:"):
+            await handle_select(interaction, cid[len("tds:sel:"):])
+        elif cid == "tds:yes":
+            await handle_yes(interaction)
+        elif cid == "tds:no":
+            await archive_and_close_ticket(interaction, interaction.channel, user_cancelled=True)
+        elif cid == "tds:close":
+            await handle_close(interaction)
+    except Exception as e:
+        print(f"Interaction error ({original}): {e}")
+        await _reply_ephemeral(interaction, "Something went wrong. Please try again or ping an admin.")
+
+
+# =====================================================================
+# --- Sticky messages (silent, per channel) ---
+# After anyone posts in a sticky channel, the bot re-posts its sticky
+# at the bottom without notifications and deletes the old copy.
+# =====================================================================
+STICKY_CHANNELS = set()
+_sticky_state = {}
+_sticky_locks = {}
+
+def rebuild_sticky_index(cfg):
+    STICKY_CHANNELS.clear()
+    for s in cfg.get("stickies", []):
+        if s.get("enabled", True) and str(s.get("channel_id", "")).isdigit():
+            STICKY_CHANNELS.add(int(s["channel_id"]))
+
+def _is_sticky_message(m):
+    if m.author.id != bot.user.id:
+        return False
+    if (m.content or "").rstrip().endswith(STICKY_MARK_TEXT):
+        return True
+    return any(e.footer and e.footer.text == STICKY_MARK_EMBED for e in m.embeds)
+
+async def refresh_sticky(channel_id, force=False):
+    cfg = await get_config()
+    s = next((x for x in cfg["stickies"] if x.get("enabled", True) and int(x["channel_id"]) == channel_id), None)
+    if not s:
+        return
+    channel = await _resolve_channel(channel_id)
+    if not channel:
+        return
+    lock = _sticky_locks.setdefault(channel_id, asyncio.Lock())
+    async with lock:
+        recent = [m async for m in channel.history(limit=25)]
+        if not force and recent and _is_sticky_message(recent[0]):
+            return
+        for m in recent:
+            if _is_sticky_message(m):
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+        if s.get("mode") == "embed":
+            embed = await build_embed(s.get("title"), s.get("content"), s.get("color", "#FFFF00"),
+                                      s.get("image"), "", footer=STICKY_MARK_EMBED)
+            await channel.send(embed=embed, silent=True)
+        else:
+            await channel.send(content=f"{(s.get('content') or '')[:1900]}\n{STICKY_MARK_TEXT}", silent=True)
+
+async def remove_sticky_messages(channel_id):
+    channel = await _resolve_channel(channel_id)
+    if not channel:
+        return
+    async for m in channel.history(limit=50):
+        if _is_sticky_message(m):
+            try:
+                await m.delete()
+            except Exception:
+                pass
+
+async def _sticky_worker(channel_id, st):
+    try:
+        while st["dirty"]:
+            st["dirty"] = False
+            await asyncio.sleep(STICKY_DELAY_SECONDS)
+            if st["dirty"]:
+                continue  # more messages arrived while waiting; wait again
+            await refresh_sticky(channel_id)
+    except Exception as e:
+        print(f"Sticky error in {channel_id}: {e}")
+    finally:
+        st["running"] = False
+
+def schedule_sticky(channel_id):
+    st = _sticky_state.setdefault(channel_id, {"running": False, "dirty": False})
+    st["dirty"] = True
+    if not st["running"]:
+        st["running"] = True
+        asyncio.create_task(_sticky_worker(channel_id, st))
 
 
 @bot.event
 async def on_ready():
-    bot.add_view(TicketView())
-    bot.add_view(CloseTicketView())
-    bot.add_view(ProductSelectionView())
-    bot.add_view(ConfirmationView())
+    cfg = await get_config()
+    rebuild_sticky_index(cfg)
+    for sticky in cfg["stickies"]:
+        if sticky.get("enabled", True):
+            schedule_sticky(int(sticky["channel_id"]))
 
     if not hasattr(bot, "spotify_loop_started"):
         bot.spotify_loop_started = True
@@ -710,25 +1011,15 @@ async def on_ready():
     print(f'Logged in successfully as {bot.user.name}!')
 
 
-# --- Command to spawn the Merch Panel ---
+# --- Command to spawn the Merch Panel (content is edited on the web dashboard) ---
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def merchpanel(ctx):
-    view = TicketView()
-    embed = discord.Embed(
-        title="🎸 Grab Your Official The Door Stoppers Merch! 🚪",
-        description=(
-            "🌅 **NEW PRE-ORDERS (Discord Exclusive Discounts):**\n"
-            "• **Chasing Sunset Tee** — **Php 100 OFF** exclusively on Discord!\n"
-            "• **Chasing Sunsets Album CD** — **Php 350** *(~~Php 400~~ regular — Php 50 OFF)*!\n\n"
-            "Our physical **Pillars EP CDs** and official band tees are also available.\n\n"
-            "Click the **Order Now** button below to open a private ticket with the band and secure your merch!"
-        ),
-        color=0xFFFF00
-    )
-
-    await ctx.send(embed=embed, view=view)
-    await ctx.message.delete()
+    await post_panel(ctx.channel)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
 
 
 # --- Automated Announcement System ---
@@ -819,6 +1110,9 @@ class ConfirmView(discord.ui.View):
 
 @bot.event
 async def on_message(message):
+    if message.guild and message.author.id != bot.user.id and message.channel.id in STICKY_CHANNELS:
+        schedule_sticky(message.channel.id)
+
     if message.author.bot:
         return
 
@@ -830,6 +1124,11 @@ async def on_message(message):
 
     if message.channel.id == RECORD_CHANNEL_ID:
         await update_sticky_message(message.channel)
+
+    if message.attachments and getattr(message.channel, "category_id", None) == TICKET_CATEGORY_ID:
+        cfg = await get_config()
+        if cfg["merch"]["close"].get("when") == "after_receipt":
+            await post_close_button(message.channel, cfg)
 
     await bot.process_commands(message)
 
@@ -1521,6 +1820,13 @@ async def feed_check(ctx):
     await ctx.send(f"Checked all feeds. {sent} new notification(s) sent.")
 
 
+# --- Admin web dashboard (Discord login). Needs dashboard.py and dashboard_ui.py next to this file ---
+try:
+    import dashboard
+    dashboard.register(app, sys.modules[__name__])
+except Exception as e:
+    print(f"Dashboard not loaded: {e}")
+
 # Start the web server and bot
 keep_alive()
-bot.run(os.getenv('DISCORD_TOKEN'))
+bot.run(DISCORD_TOKEN)
