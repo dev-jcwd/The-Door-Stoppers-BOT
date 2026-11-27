@@ -24,7 +24,7 @@ svg.ic{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;str
 .rail::before,.rail::after{content:"";position:absolute;right:-1px;width:6px;height:40px;border-radius:3px 0 0 3px;background:linear-gradient(90deg,var(--brassDeep),var(--brass));top:16%}
 .rail::after{top:78%}
 .rail-brand{display:flex;align-items:center;gap:12px;text-decoration:none;padding:4px 6px}
-.rail-brand .mark{width:38px;height:44px;flex:none;color:var(--brass)}
+.rail-brand .mark{width:28px;height:42px;margin:0 5px;flex:none;color:var(--brass);overflow:visible}
 .rail-brand b{display:block;font:700 17px/1.1 var(--display);letter-spacing:-.01em}
 .rail-brand small{color:var(--frameDim);font-size:12.5px}
 .rail nav{display:flex;flex-direction:column;gap:3px}
@@ -123,13 +123,15 @@ input[type=color]{width:46px;height:42px;padding:3px;border:1px solid var(--line
 .hello{font:700 44px/1.05 var(--display);letter-spacing:-.03em;margin:4px 0 6px}
 .hello+p{color:var(--dim);margin:0 0 26px}
 .doors{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-bottom:34px}
-.dtile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;min-height:208px;padding:22px 24px;background:#fff;border:1px solid var(--line);border-radius:130px 130px 16px 16px;text-decoration:none;transition:border-color .2s,transform .2s}
-.dtile:hover{border-color:var(--brassDeep);transform:translateY(-3px)}
-.dtile .glass{position:absolute;top:26px;left:50%;transform:translateX(-50%);width:62px;height:62px;border-radius:50%;display:grid;place-items:center;background:var(--soft);border:1px solid var(--line);color:var(--ink);transition:background .2s,color .2s}
-.dtile:hover .glass{background:var(--brass);color:var(--brassInk);border-color:var(--brassDeep)}
+.dtile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;min-height:268px;padding:22px 24px;background:#fff;border:1px solid var(--line);border-radius:14px;text-decoration:none;transition:border-color .2s,transform .2s,box-shadow .2s;--dc:var(--brass)}
+.dtile:hover,.dtile:focus-visible{border-color:var(--dc);transform:translateY(-3px);box-shadow:0 14px 30px -18px var(--dc)}
+.dtile .dg{position:absolute;top:24px;left:50%;margin-left:-35px;width:70px;height:105px;perspective:420px;color:var(--dc)}
+.dtile .hole{position:absolute;inset:0;background:var(--dc);opacity:.16;border-radius:2px;transition:opacity .3s}
+.dtile .dg .lf{position:absolute;inset:0;width:100%;height:100%;transform-origin:left center;transition:transform .5s cubic-bezier(.5,.1,.2,1);overflow:visible}
+.dtile:hover .hole,.dtile:focus-visible .hole{opacity:.55}
+.dtile:hover .dg .lf,.dtile:focus-visible .dg .lf{transform:rotateY(-52deg)}
 .dtile b{font:700 20px var(--display)}
 .dtile span{color:var(--dim);font-size:14px}
-.dtile::after{content:"";position:absolute;right:16px;top:58%;width:10px;height:10px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#ffe19a,var(--brass) 55%,#b9791a)}
 .stats{display:flex;gap:34px;flex-wrap:wrap;margin-bottom:30px}
 .stats div{min-width:110px}
 .stats b{display:block;font:700 26px var(--display)}
@@ -143,7 +145,7 @@ input[type=color]{width:46px;height:42px;padding:3px;border:1px solid var(--line
 .todo b{display:block}.todo small{color:var(--dim)}
 
 /* ---------- preview door ---------- */
-.door{position:relative;background:var(--frame);border-radius:30px 30px 12px 12px;padding:14px 14px 16px;box-shadow:0 22px 40px -26px rgba(26,21,33,.8)}
+.door{position:relative;background:var(--frame);border-radius:14px;padding:14px 14px 16px;box-shadow:0 22px 40px -26px rgba(26,21,33,.8)}
 .door-head{display:flex;align-items:center;gap:8px;color:var(--frameDim);font-size:12.5px;font-weight:600;padding:3px 8px 11px}
 .door-head i{width:8px;height:8px;border-radius:50%;background:var(--brass)}
 .door .knob{position:absolute;right:-7px;top:46%;width:15px;height:15px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#ffe19a,var(--brass) 55%,#b9791a);box-shadow:0 1px 3px rgba(0,0,0,.5)}
@@ -245,19 +247,14 @@ dialog::backdrop{background:rgba(26,21,33,.62);backdrop-filter:blur(3px)}
 /* ---------- login ---------- */
 body.login{background:radial-gradient(1200px 700px at 50% 30%,#2A2036 0,#17121D 60%);min-height:100vh;display:grid;place-items:center;color:#fff;overflow:hidden}
 .scene{display:grid;justify-items:center;gap:26px;padding:24px;perspective:1400px}
-.doorway{position:relative;width:min(88vw,400px);aspect-ratio:3/4.15;border-radius:200px 200px 10px 10px;background:#0E0B12;border:12px solid #2B2336;box-shadow:0 0 0 2px #3A3047,0 40px 80px -30px #000;overflow:hidden}
-.room{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:14px;text-align:center;padding:60px 26px 30px;background:radial-gradient(circle at 50% 38%,rgba(244,182,63,.42),rgba(244,182,63,.08) 55%,transparent 75%),#171220}
-.room h1{font-size:30px;font-weight:800}
+.doorway{position:relative;width:min(80vw,340px);aspect-ratio:274/410;background:#000;box-shadow:0 40px 80px -30px #000,0 0 70px -6px rgba(244,182,63,.3);color:#F4EFE6}
+.room{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:14px;text-align:center;padding:34px 22px 22px;background:radial-gradient(circle at 50% 38%,rgba(244,182,63,.42),rgba(244,182,63,.08) 55%,transparent 75%),#171220}
+.room h1{font-size:28px;font-weight:800}
 .room p{margin:0;color:#C5BBD6;max-width:28ch}
-.leaf{position:absolute;top:0;bottom:0;width:50%;background:linear-gradient(180deg,#3A2E4A,#2A2136);transition:none;backface-visibility:hidden}
-.leaf::before,.leaf::after{content:"";position:absolute;left:14%;right:14%;border:2px solid rgba(255,255,255,.08);border-radius:6px}
-.leaf::before{top:9%;height:34%;border-radius:80px 80px 6px 6px}.leaf::after{top:50%;height:38%}
-.leaf.l{left:0;transform-origin:left center;border-right:1px solid #120E18;animation:openL 1.5s .5s cubic-bezier(.6,.05,.25,1) forwards}
-.leaf.r{right:0;transform-origin:right center;border-left:1px solid #120E18;animation:openR 1.5s .5s cubic-bezier(.6,.05,.25,1) forwards}
-.leaf .knob{position:absolute;top:52%;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#ffe19a,var(--brass) 55%,#b9791a)}
-.leaf.l .knob{right:12px}.leaf.r .knob{left:12px}
-@keyframes openL{to{transform:rotateY(-112deg)}}
-@keyframes openR{to{transform:rotateY(112deg)}}
+.leaf{position:absolute;inset:0;transform-origin:left center;backface-visibility:hidden;animation:openDoor 1.7s .5s cubic-bezier(.6,.05,.25,1) forwards}
+.leaf .tdsdoor{display:block;width:100%;height:100%}
+.doorway::after{content:"";position:absolute;inset:0;border:5px solid #F4EFE6;pointer-events:none}
+@keyframes openDoor{to{transform:rotateY(-108deg)}}
 .room>*{opacity:0;animation:fadeUp .6s 1.5s ease-out forwards}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .closed .leaf{animation:none}.closed .room>*{animation:none;opacity:1}
@@ -281,7 +278,7 @@ body.login{background:radial-gradient(1200px 700px at 50% 30%,#2A2036 0,#17121D 
   .mrow{grid-template-columns:44px 1fr}.mrow>.addrole{grid-column:1/-1}.item{grid-template-columns:1fr}.item .acts{justify-content:flex-start}
 }
 @media (prefers-reduced-motion:reduce){
-  .leaf.l,.leaf.r{animation:none;display:none}.room>*{animation:none;opacity:1}.toast{animation:none}
+  .leaf{animation:none;display:none}.room>*{animation:none;opacity:1}.toast{animation:none}
   *{transition:none!important}
 }
 '''
@@ -521,16 +518,17 @@ JS = r'''(function () {
 '''
 
 TEMPLATES = {
-    'base.html': r'''{% from "macros.html" import icon, csrf_field with context %}<!doctype html>
+    'base.html': r'''{% from "macros.html" import icon, csrf_field, tds_door with context %}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#1A1521">
 <title>{% block title %}{{ page_title }}{% endblock %} · The Door Stoppers</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 60'%3E%3Crect width='40' height='60' rx='6' fill='%231A1521'/%3E%3Cg fill='none' stroke='%23F4B63F' stroke-width='2.6'%3E%3Crect x='7' y='8' width='26' height='44'/%3E%3Crect x='12' y='13' width='14' height='13'/%3E%3Crect x='12' y='34' width='14' height='13'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="/admin/assets/app.css?v={{ v }}"></head>
 <body>
 <aside class="rail">
-  <a class="rail-brand" href="/admin"><svg class="mark" viewBox="0 0 38 44" aria-hidden="true"><path d="M3 42V17C3 8 10 2.5 19 2.5S35 8 35 17v25" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M10 42V18.5c0-5 3.5-8.5 9-8.5s9 3.5 9 8.5V42" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"/><circle cx="25" cy="28" r="2.2" fill="currentColor"/></svg><span><b>The Door Stoppers</b><small>Control room</small></span></a>
+  <a class="rail-brand" href="/admin">{{ tds_door("mark") }}<span><b>The Door Stoppers</b><small>Control room</small></span></a>
   <nav aria-label="Main">{% for key, href, label, ic in nav %}<a href="{{ href }}" class="{{ 'on' if key == active }}"{% if key == active %} aria-current="page"{% endif %}>{{ icon(ic) }}<span>{{ label }}</span></a>{% endfor %}</nav>
   <div class="rail-foot">{% if bot_avatar %}<img src="{{ bot_avatar }}" alt="">{% endif %}<div><b>{{ bot_name }}</b>Online</div></div>
 </aside>
@@ -593,14 +591,15 @@ TEMPLATES = {
 {% endblock %}
 ''',
 
-    'denied.html': r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    'denied.html': r'''{% from "macros.html" import tds_door %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>No access · The Door Stoppers</title>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-14 -14 302 438'%3E%3Crect x='-14' y='-14' width='302' height='438' rx='40' fill='%231A1521'/%3E%3Cg fill='none' stroke='%23F4B63F' stroke-width='11'%3E%3Crect x='4.5' y='4.5' width='265' height='401'/%3E%3Crect x='59' y='52' width='158' height='140'/%3E%3Cpath d='M59 52L217 192M217 52L59 192'/%3E%3Crect x='59' y='217' width='158' height='140'/%3E%3Cpath d='M59 217L217 357M217 217L59 357'/%3E%3Ccircle cx='243' cy='205' r='13'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="/admin/assets/app.css?v={{ v }}"></head>
 <body class="login"><div class="scene closed">
   <div class="doorway" role="img" aria-label="A closed door" style="width:min(70vw,260px)">
     <div class="room"></div>
-    <div class="leaf l"><i class="knob"></i></div><div class="leaf r"><i class="knob"></i></div>
+    <div class="leaf">{{ tds_door("", true, "#000") }}</div>
   </div>
   <h1 style="font-size:30px;text-align:center">This door is locked</h1>
   <p class="note">You're signed in as <b>{{ name }}</b>, but this account isn't on the approved list.<br>If you should have access, send an admin your Discord ID:<br><span class="deny-id">{{ uid }}</span></p>
@@ -608,9 +607,10 @@ TEMPLATES = {
 </div></body></html>
 ''',
 
-    'login.html': r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    'login.html': r'''{% from "macros.html" import tds_door %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Sign in · The Door Stoppers</title>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-14 -14 302 438'%3E%3Crect x='-14' y='-14' width='302' height='438' rx='40' fill='%231A1521'/%3E%3Cg fill='none' stroke='%23F4B63F' stroke-width='11'%3E%3Crect x='4.5' y='4.5' width='265' height='401'/%3E%3Crect x='59' y='52' width='158' height='140'/%3E%3Cpath d='M59 52L217 192M217 52L59 192'/%3E%3Crect x='59' y='217' width='158' height='140'/%3E%3Cpath d='M59 217L217 357M217 217L59 357'/%3E%3Ccircle cx='243' cy='205' r='13'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="/admin/assets/app.css?v={{ v }}"></head>
 <body class="login"><div class="scene">
   <div class="doorway" role="img" aria-label="A door opening">
@@ -619,13 +619,14 @@ TEMPLATES = {
       {% if disabled %}<p>The dashboard isn't set up yet.</p>{% else %}<p>Band admins only. Sign in with the Discord account you use for the server.</p>
       <a class="btn brass lg" href="/login">Continue with Discord</a>{% endif %}
     </div>
-    <div class="leaf l"><i class="knob"></i></div><div class="leaf r"><i class="knob"></i></div>
+    <div class="leaf">{{ tds_door("", true, "#000") }}</div>
   </div>
   {% if disabled %}<p class="note">Add <code>DISCORD_CLIENT_ID</code>, <code>DISCORD_CLIENT_SECRET</code> and <code>SESSION_SECRET</code> in Render → Environment, then redeploy.</p>{% endif %}
 </div></body></html>
 ''',
 
-    'macros.html': r'''{% macro csrf_field() %}<input type="hidden" name="csrf" value="{{ csrf }}">{% endmacro %}
+    'macros.html': r'''{% macro tds_door(cls='', frame=true, fill='none') %}<svg class="tdsdoor {{ cls }}" viewBox="0 0 274 410" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="9" stroke-linejoin="miter">{% if frame %}<rect x="4.5" y="4.5" width="265" height="401" fill="{{ fill }}"/>{% endif %}<rect x="59" y="52" width="158" height="140"/><path d="M59 52L217 192M217 52L59 192"/><rect x="59" y="217" width="158" height="140"/><path d="M59 217L217 357M217 217L59 357"/><circle cx="243" cy="205" r="12"/></g></svg>{% endmacro %}
+{% macro csrf_field() %}<input type="hidden" name="csrf" value="{{ csrf }}">{% endmacro %}
 
 {% macro icon(name) %}<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">{% if name == 'home' %}<path d="M5 21V8a7 7 0 0 1 14 0v13"/><path d="M3 21h18"/><circle cx="15.5" cy="14.5" r=".9" fill="currentColor"/>{% elif name == 'merch' %}<path d="M5 8h14l-1 12H6L5 8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>{% elif name == 'pin' %}<path d="M12 17v5"/><path d="M8 3h8l-1 6 3 4H6l3-4-1-6z"/>{% elif name == 'send' %}<path d="M21 3 10 14"/><path d="M21 3l-7 18-4-7-7-4 18-7z"/>{% elif name == 'people' %}<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14.5a5 5 0 0 1 4 5"/>{% elif name == 'bell' %}<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4l2-2z"/><path d="M10 21a2 2 0 0 0 4 0"/>{% elif name == 'bot' %}<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="3.8" r="1"/><circle cx="9" cy="13.5" r="1" fill="currentColor"/><circle cx="15" cy="13.5" r="1" fill="currentColor"/>{% elif name == 'spark' %}<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/><path d="M19 17l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/>{% endif %}</svg>{% endmacro %}
 
@@ -837,7 +838,7 @@ TEMPLATES = {
 ''',
 
     'overview.html': r'''{% extends "base.html" %}
-{% from "macros.html" import icon with context %}
+{% from "macros.html" import icon, tds_door with context %}
 {% set page_title = "Home" %}
 {% block h1 %}Home{% endblock %}
 {% block sub %}Everything for {{ guild_name }} in one place.{% endblock %}
@@ -852,12 +853,12 @@ TEMPLATES = {
   <div><b>{{ feeds }}</b><span>notification feeds</span></div>
 </div>
 <div class="doors">
-  <a class="dtile" href="/admin/merch"><span class="glass">{{ icon('merch') }}</span><b>Merch panel</b><span>Buttons, replies, images, colors</span></a>
-  <a class="dtile" href="/admin/stickies"><span class="glass">{{ icon('pin') }}</span><b>Sticky messages</b><span>Silent notes that stay at the bottom</span></a>
-  <a class="dtile" href="/admin/send"><span class="glass">{{ icon('send') }}</span><b>Send a message</b><span>Text, images and video, anywhere</span></a>
-  <a class="dtile" href="/admin/members"><span class="glass">{{ icon('people') }}</span><b>Members &amp; roles</b><span>Find someone and change their roles</span></a>
-  <a class="dtile" href="/admin/notifications"><span class="glass">{{ icon('bell') }}</span><b>Notifications</b><span>YouTube, TikTok, Facebook, Instagram, music</span></a>
-  <a class="dtile" href="/admin/bot"><span class="glass">{{ icon('bot') }}</span><b>Bot profile</b><span>Picture, banner, bio and the AI helper</span></a>
+  <a class="dtile" href="/admin/merch" style="--dc:#F4B63F"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Merch panel</b><span>Buttons, replies, images, colors</span></a>
+  <a class="dtile" href="/admin/stickies" style="--dc:#E8576B"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Sticky messages</b><span>Silent notes that stay at the bottom</span></a>
+  <a class="dtile" href="/admin/send" style="--dc:#2FA6A0"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Send a message</b><span>Text, images and video, anywhere</span></a>
+  <a class="dtile" href="/admin/members" style="--dc:#7B61D9"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Members &amp; roles</b><span>Find someone and change their roles</span></a>
+  <a class="dtile" href="/admin/notifications" style="--dc:#3E8EDE"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Notifications</b><span>YouTube, TikTok, Facebook, Instagram, music</span></a>
+  <a class="dtile" href="/admin/bot" style="--dc:#4DAA6A"><span class="dg"><i class="hole"></i>{{ tds_door("lf", true, "#fff") }}</span><b>Bot profile</b><span>Picture, banner, bio and the AI helper</span></a>
 </div>
 <section class="sheet" style="max-width:720px"><h2>Setup check</h2><p class="hint">Things that make the dashboard work better.</p>
 <ul class="todo">{% for c in checks %}<li class="{{ 'yes' if c.ok else 'no' }}"><span class="mk">{{ '✓' if c.ok else '' }}</span><div><b>{{ c.label }}</b>{% if not c.ok %}<small>{{ c.hint }} <a href="{{ c.href }}">Open</a></small>{% else %}<small>All set.</small>{% endif %}</div></li>{% endfor %}</ul></section>
